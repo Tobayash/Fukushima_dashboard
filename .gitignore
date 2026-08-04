@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+*.log
+.streamlit/
+docs/.Rhistory
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+!data/raw/fukushima_map_export.png
+!data/raw/infrastructure_life_industry_indicators_v1.csv
+!data/processed/share_master_indicators.csv
