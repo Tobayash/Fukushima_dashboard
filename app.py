@@ -306,8 +306,9 @@ def svg_area_labels(label_points: dict[str, tuple[float, float]], selected_area:
         dx, dy = label_offsets.get(area_name, (0, 0))
         selected_class = " selected-label" if area_name == selected_area else ""
         labels.append(
+            f'<a href="?area={quote(area_name)}" target="_self">'
             f'<text class="target-label{selected_class}" x="{x + dx:.1f}" y="{y + dy:.1f}">'
-            f"{escape(area_name)}</text>"
+            f"{escape(area_name)}</text></a>"
         )
     labels.append("</g>")
     return "".join(labels)
@@ -416,6 +417,18 @@ def html_area_label_links(
         )
     links.append("</div>")
     return "".join(links)
+
+
+def html_area_chips(area_options: list[str], selected_area: str) -> str:
+    chips = ['<div class="map-chip-row">']
+    for area_name in area_options:
+        selected_class = " selected-map-chip" if area_name == selected_area else ""
+        chips.append(
+            f'<a class="map-chip{selected_class}" href="?area={quote(area_name)}" target="_self">'
+            f"{escape(area_name)}</a>"
+        )
+    chips.append("</div>")
+    return "".join(chips)
 
 
 def svg_area_style_rules(area_options: list[str], selected_area: str) -> str:
@@ -558,7 +571,8 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     svg_text = svg_text.replace('<?xml version="1.0" standalone="no"?>', "")
     view_box, label_points = svg_path_bounds(svg_text, area_options)
     view_x, view_y, view_w, view_h = view_box
-    label_links = html_area_label_links(label_points, view_box, selected_area)
+    svg_labels = svg_area_labels(label_points, selected_area)
+    area_chips = html_area_chips(area_options, selected_area)
     svg_text = re.sub(
         r'viewBox="[^"]+"',
         f'viewBox="{view_x:.1f} {view_y:.1f} {view_w:.1f} {view_h:.1f}"',
@@ -567,17 +581,18 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     )
     svg_text = re.sub(r'\swidth="[^"]+"\sheight="[^"]+"', ' width="100%" height="100%"', svg_text, count=1)
     svg_text = style_svg_area_paths(svg_text, area_options, selected_area)
+    svg_text = svg_text.replace("</svg>", f"{svg_labels}</svg>", 1)
     map_html = f"""
     <div class="svg-map-shell">
       <div class="svg-map">
         {svg_text}
-        {label_links}
       </div>
       <div class="svg-map-caption">
         <span class="selected-dot"></span>
         <strong>{selected_area}</strong>
         <span>対象12市町村を拡大表示しています。地図上の市町村をクリックして切り替えられます。</span>
       </div>
+      {area_chips}
     </div>
     <style>
     html, body {{
@@ -616,7 +631,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       stroke-width: 12px;
       paint-order: stroke;
       text-anchor: middle;
-      pointer-events: none;
+      cursor: pointer;
     }}
     .target-label.selected-label {{
       fill: #9f321f;
@@ -665,6 +680,38 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     .svg-map-caption strong {{
       color: #26343c;
       white-space: nowrap;
+    }}
+    .map-chip-row {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+      margin-top: 12px;
+    }}
+    .map-chip {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 30px;
+      padding: 5px 10px;
+      border: 1px solid #d4dde0;
+      border-radius: 999px;
+      background: #ffffff;
+      color: #26343c;
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.2;
+      text-decoration: none;
+      box-shadow: 0 1px 4px rgba(31, 42, 48, .08);
+    }}
+    .map-chip:hover {{
+      background: #e4f4ee;
+      border-color: #3c8d78;
+      color: #163d35;
+    }}
+    .map-chip.selected-map-chip {{
+      background: #d65f45;
+      border-color: #1f2a30;
+      color: #ffffff;
     }}
     .selected-dot {{
       width: 12px;
