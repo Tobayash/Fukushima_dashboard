@@ -135,6 +135,7 @@ DYNAMICS_IDS = [
     "social_change",
     "natural_change",
 ]
+POPULATION_ESTIMATE_IDS = {"current_population", "households"}
 
 
 st.set_page_config(
@@ -695,36 +696,97 @@ def no_data_message(area_name: str, indicator_ids: list[str], df: pd.DataFrame) 
         st.caption(f"{area_name}で表示可能なデータがない指標: " + "、".join(missing))
 
 
+def value_axis_label(data: pd.DataFrame) -> str:
+    units = [unit for unit in data["unit"].dropna().astype(str).unique() if unit]
+    if len(units) == 1:
+        return f"値（{units[0]}）"
+    if len(units) > 1:
+        return "値（単位混在）"
+    return "値"
+
+
+def time_position_note(data: pd.DataFrame) -> str | None:
+    periods = data["period"].dropna().astype(str)
+    if periods.empty:
+        return None
+
+    notes: list[str] = []
+    if periods.str.fullmatch(r"\d{4}-\d{2}").any():
+        notes.append("年月のみのデータは、グラフ上では当該月の1日位置に配置しています。")
+    if periods.str.fullmatch(r"\d{4}").any():
+        notes.append("年のみのデータは、年単位の値として扱っています。")
+    if periods.str.fullmatch(r"\d{4}-\d{2}-\d{2}").any():
+        notes.append("年月日まであるデータは、その日付位置に配置しています。")
+    return " ".join(notes) if notes else None
+
+
+def population_estimate_note(data: pd.DataFrame) -> str | None:
+    estimate_data = data[data["indicator_id"].isin(POPULATION_ESTIMATE_IDS)].copy()
+    if estimate_data.empty:
+        return None
+
+    changes: list[str] = []
+    for indicator_name, group in estimate_data.groupby("indicator_name"):
+        group = group.dropna(subset=["value", "period_dt"]).sort_values("period_dt").copy()
+        if len(group) < 2:
+            continue
+        group["previous_value"] = group["value"].shift(1)
+        group["previous_period"] = group["period_label"].shift(1)
+        denominator = group["previous_value"].abs().replace(0, pd.NA)
+        group["change_rate"] = (group["value"] - group["previous_value"]).abs() / denominator
+        flagged = group[(group["previous_value"].notna()) & (group["change_rate"] >= 0.05)].head(2)
+        for _, row in flagged.iterrows():
+            changes.append(f"{indicator_name}: {row['previous_period']}→{row['period_label']}")
+
+    base_note = (
+        "現住人口・世帯数は福島県現住人口調査の公開データに基づく推計値で、"
+        "国勢調査を基準に補正されるため、国勢調査年や推計方法の切替付近で段差が見える場合があります。"
+    )
+    if changes:
+        return base_note + " 表示範囲では " + "、".join(changes[:4]) + " に比較的大きな変化があります。"
+    return base_note
+
+
 def render_line_chart(data: pd.DataFrame, title: str) -> None:
+    y_label = value_axis_label(data)
     fig = px.line(
         data,
         x="period_dt",
         y="value",
         color="indicator_name",
         markers=False,
-        labels={"period_dt": "時点", "value": "値", "indicator_name": "指標"},
+        labels={"period_dt": "時点", "value": y_label, "indicator_name": "指標"},
+        hover_data={"period_label": True, "unit": True, "period_dt": False},
         title=title,
     )
+    fig.update_yaxes(title_text=y_label)
+    fig.update_xaxes(title_text="時点")
     fig.update_layout(
         height=360,
         margin=dict(l=10, r=10, t=50, b=10),
         legend_title_text="",
     )
     st.plotly_chart(fig, width="stretch")
+    notes = [note for note in [population_estimate_note(data), time_position_note(data)] if note]
+    if notes:
+        st.caption(" ".join(notes))
 
 
 def render_latest_bar_chart(data: pd.DataFrame, title: str) -> None:
     if data.empty:
         return
+    y_label = value_axis_label(data)
     fig = px.bar(
         data,
         x="indicator_name",
         y="value",
         color="indicator_name",
         text="period_label",
-        labels={"indicator_name": "指標", "value": f"値（{data['unit'].iloc[0]}）"},
+        labels={"indicator_name": "指標", "value": y_label},
         title=title,
     )
+    fig.update_yaxes(title_text=y_label)
+    fig.update_xaxes(title_text="指標")
     fig.update_traces(textposition="outside", cliponaxis=False)
     fig.update_layout(
         height=340,
@@ -786,7 +848,14 @@ def render_intention_chart(area_df: pd.DataFrame, selected_ids: list[str]) -> No
 
 def render_chart_tab(area_df: pd.DataFrame, selected_ids: list[str]) -> None:
     icon_heading("chart", "復興指標グラフ")
-    st.markdown('<div class="section-note">時系列データがある指標は折れ線で、時点が限られる指標は同じ単位ごとの最新値として表示します。データがない項目はNO DATAとして扱います。</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="section-note">'
+        '時系列データがある指標は折れ線で、時点が限られる指標は同じ単位ごとの最新値として表示します。'
+        '年月のみのデータはグラフ上では当該月の1日位置に、年月日まであるデータはその日付位置に配置しています。'
+        'データがない項目はNO DATAとして扱います。'
+        '</div>',
+        unsafe_allow_html=True,
+    )
     chart_df = area_df[
         area_df["period_dt"].isna() | (area_df["period_dt"] >= CHART_START_DATE)
     ].copy()
