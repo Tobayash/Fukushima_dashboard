@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 from html import escape
 from io import BytesIO
-import json
 from pathlib import Path
 import re
 from urllib.parse import quote
@@ -314,6 +313,66 @@ def svg_area_labels(label_points: dict[str, tuple[float, float]], selected_area:
     return "".join(labels)
 
 
+def mark_svg_target_paths(svg_text: str, area_options: list[str], selected_area: str) -> str:
+    target_names = set(area_options)
+
+    def replace_path(match: re.Match[str]) -> str:
+        path_tag = match.group(0)
+        area_name = match.group(1)
+        if area_name not in target_names:
+            return path_tag
+
+        extra_classes = "target-area selected-area" if area_name == selected_area else "target-area"
+        if 'class="' in path_tag:
+            path_tag = re.sub(r'class="([^"]*)"', rf'class="\1 {extra_classes}"', path_tag, count=1)
+        else:
+            path_tag = path_tag.replace("<path", f'<path class="{extra_classes}"', 1)
+
+        if "tabindex=" not in path_tag:
+            path_tag = path_tag.replace(">", ' tabindex="0">', 1)
+
+        return path_tag
+
+    return re.sub(r'<path\b(?=[^>]*data-name="([^"]+)")[^>]*>', replace_path, svg_text)
+
+
+def html_area_label_links(
+    label_points: dict[str, tuple[float, float]],
+    view_box: tuple[float, float, float, float],
+    selected_area: str,
+) -> str:
+    view_x, view_y, view_w, view_h = view_box
+    label_offsets = {
+        "南相馬市": (20, -35),
+        "飯舘村": (-15, -35),
+        "川俣町": (-20, -25),
+        "田村市": (-50, 40),
+        "葛尾村": (-10, 25),
+        "浪江町": (15, -25),
+        "双葉町": (45, 0),
+        "大熊町": (35, 10),
+        "富岡町": (40, 25),
+        "楢葉町": (42, 12),
+        "広野町": (35, 20),
+        "川内村": (-35, 20),
+    }
+    links = ['<div class="map-label-layer">']
+    for area_name in AREA_OPTIONS:
+        if area_name not in label_points:
+            continue
+        x, y = label_points[area_name]
+        dx, dy = label_offsets.get(area_name, (0, 0))
+        left = ((x + dx - view_x) / view_w) * 100
+        top = ((y + dy - view_y) / view_h) * 100
+        selected_class = " selected-label-link" if area_name == selected_area else ""
+        links.append(
+            f'<a class="map-label-link{selected_class}" href="/?area={quote(area_name)}" target="_top" '
+            f'style="left:{left:.3f}%; top:{top:.3f}%;">{escape(area_name)}</a>'
+        )
+    links.append("</div>")
+    return "".join(links)
+
+
 def latest_records(df: pd.DataFrame) -> pd.DataFrame:
     valid = df[df["value"].notna()].copy()
     if valid.empty:
@@ -427,8 +486,9 @@ def render_area_map(area_options: list[str], selected_area: str) -> None:
 def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     svg_text = MAP_SVG_PATH.read_text(encoding="utf-8")
     svg_text = svg_text.replace('<?xml version="1.0" standalone="no"?>', "")
-    (view_x, view_y, view_w, view_h), label_points = svg_path_bounds(svg_text, area_options)
-    label_markup = svg_area_labels(label_points, selected_area)
+    view_box, label_points = svg_path_bounds(svg_text, area_options)
+    view_x, view_y, view_w, view_h = view_box
+    label_links = html_area_label_links(label_points, view_box, selected_area)
     svg_text = re.sub(
         r'viewBox="[^"]+"',
         f'viewBox="{view_x:.1f} {view_y:.1f} {view_w:.1f} {view_h:.1f}"',
@@ -436,13 +496,12 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
         count=1,
     )
     svg_text = re.sub(r'\swidth="[^"]+"\sheight="[^"]+"', ' width="100%" height="100%"', svg_text, count=1)
-    svg_text = svg_text.replace("</svg>", f"{label_markup}</svg>")
-    available_json = json.dumps(area_options, ensure_ascii=False)
-    selected_json = json.dumps(selected_area, ensure_ascii=False)
+    svg_text = mark_svg_target_paths(svg_text, area_options, selected_area)
     map_html = f"""
     <div class="svg-map-shell">
       <div class="svg-map">
         {svg_text}
+        {label_links}
       </div>
       <div class="svg-map-caption">
         <span class="selected-dot"></span>
@@ -464,6 +523,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       padding: 12px;
     }}
     .svg-map {{
+      position: relative;
       width: 100%;
       height: 430px;
       overflow: hidden;
@@ -513,6 +573,38 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       fill: #9f321f;
       font-size: 88px;
     }}
+    .map-label-layer {{
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }}
+    .map-label-link {{
+      position: absolute;
+      transform: translate(-50%, -50%);
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, .88);
+      border: 1px solid rgba(35, 55, 63, .18);
+      color: #26343c;
+      font-size: 13px;
+      font-weight: 800;
+      line-height: 1.2;
+      text-decoration: none;
+      white-space: nowrap;
+      box-shadow: 0 2px 7px rgba(31, 42, 48, .16);
+      pointer-events: auto;
+    }}
+    .map-label-link:hover {{
+      background: #e4f4ee;
+      border-color: #3c8d78;
+      color: #163d35;
+    }}
+    .map-label-link.selected-label-link {{
+      background: #d65f45;
+      border-color: #1f2a30;
+      color: #ffffff;
+      box-shadow: 0 3px 9px rgba(111, 46, 31, .28);
+    }}
     .svg-map-caption {{
       display: flex;
       align-items: center;
@@ -534,31 +626,8 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       display: inline-block;
     }}
     </style>
-    <script>
-    const availableAreas = new Set({available_json});
-    const selectedArea = {selected_json};
-    document.querySelectorAll('.svg-map path[data-name]').forEach((path) => {{
-      const name = path.getAttribute('data-name');
-      path.setAttribute('tabindex', availableAreas.has(name) ? '0' : '-1');
-      if (availableAreas.has(name)) {{
-        path.classList.add('target-area');
-        path.addEventListener('click', () => {{
-          window.top.location.href = '/?area=' + encodeURIComponent(name);
-        }});
-        path.addEventListener('keydown', (event) => {{
-          if (event.key === 'Enter' || event.key === ' ') {{
-            event.preventDefault();
-            window.top.location.href = '/?area=' + encodeURIComponent(name);
-          }}
-        }});
-      }}
-      if (name === selectedArea) {{
-        path.classList.add('selected-area');
-      }}
-    }});
-    </script>
     """
-    components.html(map_html, height=505)
+    st.markdown(map_html, unsafe_allow_html=True)
 
 
 def render_indicator_selector(df: pd.DataFrame) -> list[str]:
