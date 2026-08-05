@@ -660,7 +660,6 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     </style>
     """
     st.markdown(map_html, unsafe_allow_html=True)
-    render_area_button_grid(area_options, selected_area)
 
 
 def render_indicator_selector(df: pd.DataFrame) -> list[str]:
