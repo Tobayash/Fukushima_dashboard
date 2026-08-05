@@ -306,9 +306,8 @@ def svg_area_labels(label_points: dict[str, tuple[float, float]], selected_area:
         dx, dy = label_offsets.get(area_name, (0, 0))
         selected_class = " selected-label" if area_name == selected_area else ""
         labels.append(
-            f'<a href="?area={quote(area_name)}" target="_self">'
             f'<text class="target-label{selected_class}" x="{x + dx:.1f}" y="{y + dy:.1f}">'
-            f"{escape(area_name)}</text></a>"
+            f"{escape(area_name)}</text>"
         )
     labels.append("</g>")
     return "".join(labels)
@@ -484,25 +483,6 @@ def sync_query_area(area_options: list[str]) -> None:
         st.session_state[AREA_SELECTION_KEY] = query_area
 
 
-def switch_area(area_name: str) -> None:
-    st.query_params["area"] = area_name
-    st.rerun()
-
-
-def render_area_button_grid(area_options: list[str], selected_area: str) -> None:
-    button_cols = st.columns(4)
-    for index, area_name in enumerate(area_options):
-        label = f"● {area_name}" if area_name == selected_area else area_name
-        button_type = "primary" if area_name == selected_area else "secondary"
-        if button_cols[index % 4].button(
-            label,
-            key=f"map_area_button_{area_name}",
-            type=button_type,
-            use_container_width=True,
-        ):
-            switch_area(area_name)
-
-
 def render_area_map(area_options: list[str], selected_area: str) -> None:
     icon_heading("map", "地図から市町村を選択")
     if MAP_SVG_PATH.exists():
@@ -590,6 +570,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     svg_text = svg_text.replace('<?xml version="1.0" standalone="no"?>', "")
     view_box, label_points = svg_path_bounds(svg_text, area_options)
     view_x, view_y, view_w, view_h = view_box
+    map_aspect_ratio = max(view_w / view_h, 0.1)
     svg_labels = svg_area_labels(label_points, selected_area)
     svg_text = re.sub(
         r'viewBox="[^"]+"',
@@ -597,7 +578,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
         svg_text,
         count=1,
     )
-    svg_text = re.sub(r'\swidth="[^"]+"\sheight="[^"]+"', ' width="100%" height="100%"', svg_text, count=1)
+    svg_text = re.sub(r'\swidth="[^"]+"\sheight="[^"]+"', ' width="100%" height="auto"', svg_text, count=1)
     svg_text = style_svg_area_paths(svg_text, area_options, selected_area)
     svg_text = svg_text.replace("</svg>", f"{svg_labels}</svg>", 1)
     map_html = f"""
@@ -608,7 +589,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       <div class="svg-map-caption">
         <span class="selected-dot"></span>
         <strong>{selected_area}</strong>
-        <span>対象12市町村を拡大表示しています。地図下のボタンで市町村を切り替えられます。</span>
+        <span>対象12市町村を拡大表示しています。市町村の切り替えは左側の補助選択から行えます。</span>
       </div>
     </div>
     <style>
@@ -627,15 +608,18 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     .svg-map {{
       position: relative;
       width: 100%;
-      height: 430px;
-      overflow: hidden;
+      aspect-ratio: {map_aspect_ratio:.4f};
+      max-height: min(68vh, 620px);
+      overflow: visible;
       border-radius: 6px;
       background: linear-gradient(180deg, #fafdff 0%, #edf5f2 100%);
     }}
     .svg-map svg {{
       width: 100%;
-      height: 100%;
+      height: auto;
+      max-height: min(68vh, 620px);
       display: block;
+      margin: 0 auto;
     }}
     .svg-map path.pref-path {{
       transition: fill .15s ease, stroke .15s ease, opacity .15s ease;
@@ -648,43 +632,10 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       stroke-width: 12px;
       paint-order: stroke;
       text-anchor: middle;
-      cursor: pointer;
     }}
     .target-label.selected-label {{
       fill: #9f321f;
       font-size: 88px;
-    }}
-    .map-label-layer {{
-      position: absolute;
-      inset: 0;
-      pointer-events: none;
-    }}
-    .map-label-link {{
-      position: absolute;
-      transform: translate(-50%, -50%);
-      padding: 3px 7px;
-      border-radius: 999px;
-      background: rgba(255, 255, 255, .88);
-      border: 1px solid rgba(35, 55, 63, .18);
-      color: #26343c;
-      font-size: 13px;
-      font-weight: 800;
-      line-height: 1.2;
-      text-decoration: none;
-      white-space: nowrap;
-      box-shadow: 0 2px 7px rgba(31, 42, 48, .16);
-      pointer-events: auto;
-    }}
-    .map-label-link:hover {{
-      background: #e4f4ee;
-      border-color: #3c8d78;
-      color: #163d35;
-    }}
-    .map-label-link.selected-label-link {{
-      background: #d65f45;
-      border-color: #1f2a30;
-      color: #ffffff;
-      box-shadow: 0 3px 9px rgba(111, 46, 31, .28);
     }}
     .svg-map-caption {{
       display: flex;
@@ -697,38 +648,6 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     .svg-map-caption strong {{
       color: #26343c;
       white-space: nowrap;
-    }}
-    .map-chip-row {{
-      display: flex;
-      flex-wrap: wrap;
-      gap: 7px;
-      margin-top: 12px;
-    }}
-    .map-chip {{
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 30px;
-      padding: 5px 10px;
-      border: 1px solid #d4dde0;
-      border-radius: 999px;
-      background: #ffffff;
-      color: #26343c;
-      font-size: 13px;
-      font-weight: 800;
-      line-height: 1.2;
-      text-decoration: none;
-      box-shadow: 0 1px 4px rgba(31, 42, 48, .08);
-    }}
-    .map-chip:hover {{
-      background: #e4f4ee;
-      border-color: #3c8d78;
-      color: #163d35;
-    }}
-    .map-chip.selected-map-chip {{
-      background: #d65f45;
-      border-color: #1f2a30;
-      color: #ffffff;
     }}
     .selected-dot {{
       width: 12px;
