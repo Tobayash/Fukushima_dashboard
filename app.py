@@ -484,6 +484,25 @@ def sync_query_area(area_options: list[str]) -> None:
         st.session_state[AREA_SELECTION_KEY] = query_area
 
 
+def switch_area(area_name: str) -> None:
+    st.query_params["area"] = area_name
+    st.rerun()
+
+
+def render_area_button_grid(area_options: list[str], selected_area: str) -> None:
+    button_cols = st.columns(4)
+    for index, area_name in enumerate(area_options):
+        label = f"● {area_name}" if area_name == selected_area else area_name
+        button_type = "primary" if area_name == selected_area else "secondary"
+        if button_cols[index % 4].button(
+            label,
+            key=f"map_area_button_{area_name}",
+            type=button_type,
+            use_container_width=True,
+        ):
+            switch_area(area_name)
+
+
 def render_area_map(area_options: list[str], selected_area: str) -> None:
     icon_heading("map", "地図から市町村を選択")
     if MAP_SVG_PATH.exists():
@@ -572,7 +591,6 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     view_box, label_points = svg_path_bounds(svg_text, area_options)
     view_x, view_y, view_w, view_h = view_box
     svg_labels = svg_area_labels(label_points, selected_area)
-    area_chips = html_area_chips(area_options, selected_area)
     svg_text = re.sub(
         r'viewBox="[^"]+"',
         f'viewBox="{view_x:.1f} {view_y:.1f} {view_w:.1f} {view_h:.1f}"',
@@ -590,9 +608,8 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       <div class="svg-map-caption">
         <span class="selected-dot"></span>
         <strong>{selected_area}</strong>
-        <span>対象12市町村を拡大表示しています。地図上の市町村をクリックして切り替えられます。</span>
+        <span>対象12市町村を拡大表示しています。地図下のボタンで市町村を切り替えられます。</span>
       </div>
-      {area_chips}
     </div>
     <style>
     html, body {{
@@ -724,6 +741,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     </style>
     """
     st.markdown(map_html, unsafe_allow_html=True)
+    render_area_button_grid(area_options, selected_area)
 
 
 def render_indicator_selector(df: pd.DataFrame) -> list[str]:
