@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import base64
+from html import escape
 from io import BytesIO
 import json
 from pathlib import Path
+import re
 from urllib.parse import quote
 
 import pandas as pd
@@ -249,6 +251,69 @@ def selected_map_crop(area_name: str) -> bytes | None:
     return output.getvalue()
 
 
+def svg_path_bounds(svg_text: str, area_options: list[str]) -> tuple[tuple[float, float, float, float], dict[str, tuple[float, float]]]:
+    target_names = set(area_options)
+    all_x: list[float] = []
+    all_y: list[float] = []
+    label_points: dict[str, tuple[float, float]] = {}
+    path_pattern = re.compile(r'<path\b(?=[^>]*data-name="([^"]+)")(?=[^>]*\sd="([^"]+)")[^>]*>', re.S)
+    number_pattern = re.compile(r"-?\d+(?:\.\d+)?")
+
+    for match in path_pattern.finditer(svg_text):
+        area_name, path_d = match.groups()
+        if area_name not in target_names:
+            continue
+        numbers = [float(value) for value in number_pattern.findall(path_d)]
+        xs = numbers[0::2]
+        ys = numbers[1::2]
+        if not xs or not ys:
+            continue
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        all_x.extend([min_x, max_x])
+        all_y.extend([min_y, max_y])
+        label_points[area_name] = ((min_x + max_x) / 2, (min_y + max_y) / 2)
+
+    if not all_x or not all_y:
+        return (5028.6, -6157.9, 5017.1, 4010.5), label_points
+
+    min_x, max_x = min(all_x), max(all_x)
+    min_y, max_y = min(all_y), max(all_y)
+    pad_x = (max_x - min_x) * 0.16
+    pad_y = (max_y - min_y) * 0.14
+    return (min_x - pad_x, min_y - pad_y, (max_x - min_x) + 2 * pad_x, (max_y - min_y) + 2 * pad_y), label_points
+
+
+def svg_area_labels(label_points: dict[str, tuple[float, float]], selected_area: str) -> str:
+    label_offsets = {
+        "南相馬市": (20, -35),
+        "飯舘村": (-15, -35),
+        "川俣町": (-20, -25),
+        "田村市": (-50, 40),
+        "葛尾村": (-10, 25),
+        "浪江町": (15, -25),
+        "双葉町": (45, 0),
+        "大熊町": (35, 10),
+        "富岡町": (40, 25),
+        "楢葉町": (42, 12),
+        "広野町": (35, 20),
+        "川内村": (-35, 20),
+    }
+    labels: list[str] = ['<g class="target-labels">']
+    for area_name in AREA_OPTIONS:
+        if area_name not in label_points:
+            continue
+        x, y = label_points[area_name]
+        dx, dy = label_offsets.get(area_name, (0, 0))
+        selected_class = " selected-label" if area_name == selected_area else ""
+        labels.append(
+            f'<text class="target-label{selected_class}" x="{x + dx:.1f}" y="{y + dy:.1f}">'
+            f"{escape(area_name)}</text>"
+        )
+    labels.append("</g>")
+    return "".join(labels)
+
+
 def latest_records(df: pd.DataFrame) -> pd.DataFrame:
     valid = df[df["value"].notna()].copy()
     if valid.empty:
@@ -362,7 +427,16 @@ def render_area_map(area_options: list[str], selected_area: str) -> None:
 def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     svg_text = MAP_SVG_PATH.read_text(encoding="utf-8")
     svg_text = svg_text.replace('<?xml version="1.0" standalone="no"?>', "")
-    svg_text = svg_text.replace('width="5017.10009765625" height="4010.5"', 'width="100%" height="100%"')
+    (view_x, view_y, view_w, view_h), label_points = svg_path_bounds(svg_text, area_options)
+    label_markup = svg_area_labels(label_points, selected_area)
+    svg_text = re.sub(
+        r'viewBox="[^"]+"',
+        f'viewBox="{view_x:.1f} {view_y:.1f} {view_w:.1f} {view_h:.1f}"',
+        svg_text,
+        count=1,
+    )
+    svg_text = re.sub(r'\swidth="[^"]+"\sheight="[^"]+"', ' width="100%" height="100%"', svg_text, count=1)
+    svg_text = svg_text.replace("</svg>", f"{label_markup}</svg>")
     available_json = json.dumps(area_options, ensure_ascii=False)
     selected_json = json.dumps(selected_area, ensure_ascii=False)
     map_html = f"""
@@ -373,7 +447,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       <div class="svg-map-caption">
         <span class="selected-dot"></span>
         <strong>{selected_area}</strong>
-        <span>地図上の市町村をクリックして切り替えられます。</span>
+        <span>対象12市町村を拡大表示しています。地図上の市町村をクリックして切り替えられます。</span>
       </div>
     </div>
     <style>
@@ -391,7 +465,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     }}
     .svg-map {{
       width: 100%;
-      height: 470px;
+      height: 430px;
       overflow: hidden;
       border-radius: 6px;
       background: linear-gradient(180deg, #fafdff 0%, #edf5f2 100%);
@@ -402,15 +476,17 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       display: block;
     }}
     .svg-map path.pref-path {{
-      fill: #dfe7dd;
+      fill: #e8ece7;
       stroke: #ffffff;
       stroke-width: 10;
+      opacity: .62;
       transition: fill .15s ease, stroke .15s ease, opacity .15s ease;
     }}
     .svg-map path.target-area {{
-      fill: #9ecfbd;
+      fill: #8fc8b5;
       stroke: #ffffff;
-      stroke-width: 11;
+      stroke-width: 14;
+      opacity: 1;
       cursor: pointer;
     }}
     .svg-map path.target-area:hover {{
@@ -420,7 +496,22 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     .svg-map path.selected-area {{
       fill: #d65f45;
       stroke: #1f2a30;
-      stroke-width: 16;
+      stroke-width: 20;
+      opacity: 1;
+    }}
+    .target-label {{
+      font-size: 78px;
+      font-weight: 800;
+      fill: #26343c;
+      stroke: rgba(255, 255, 255, .95);
+      stroke-width: 12px;
+      paint-order: stroke;
+      text-anchor: middle;
+      pointer-events: none;
+    }}
+    .target-label.selected-label {{
+      fill: #9f321f;
+      font-size: 88px;
     }}
     .svg-map-caption {{
       display: flex;
@@ -429,6 +520,10 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       margin-top: 9px;
       color: #4f5f68;
       font-size: 13px;
+    }}
+    .svg-map-caption strong {{
+      color: #26343c;
+      white-space: nowrap;
     }}
     .selected-dot {{
       width: 12px;
@@ -463,7 +558,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     }});
     </script>
     """
-    components.html(map_html, height=545)
+    components.html(map_html, height=505)
 
 
 def render_indicator_selector(df: pd.DataFrame) -> list[str]:
