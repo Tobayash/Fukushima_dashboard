@@ -174,47 +174,13 @@ st.markdown(
         font-weight: 800;
         color: #25313b;
     }
-    .icon-heading svg,
-    .metric-chip svg {
+    .icon-heading svg {
         width: 19px;
         height: 19px;
         stroke: #0f6b7d;
         stroke-width: 2.2;
         fill: none;
         flex: 0 0 auto;
-    }
-    .metric-row {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: .75rem;
-        margin: .65rem 0 1rem;
-    }
-    .metric-chip {
-        border: 1px solid #d8dee4;
-        border-radius: 8px;
-        padding: .72rem .78rem;
-        background: #ffffff;
-        min-height: 74px;
-    }
-    .metric-chip-title {
-        display: flex;
-        align-items: center;
-        gap: .42rem;
-        color: #52616f;
-        font-size: .78rem;
-        font-weight: 700;
-        margin-bottom: .25rem;
-    }
-    .metric-chip-value {
-        color: #202a33;
-        font-size: 1.15rem;
-        font-weight: 800;
-        line-height: 1.2;
-    }
-    .metric-chip-sub {
-        color: #697581;
-        font-size: .74rem;
-        margin-top: .2rem;
     }
     .source-card {
         border: 1px solid #d8dee4;
@@ -627,39 +593,6 @@ def render_sources(area_df: pd.DataFrame) -> None:
             st.caption(row["notes"])
 
 
-def render_top_snapshot(area_df: pd.DataFrame) -> None:
-    latest = latest_records(area_df)
-    if latest.empty:
-        return
-    by_id = latest.set_index("indicator_id")
-    cards = [
-        ("people", "現住人口", "current_population"),
-        ("home", "居住率", "resident_rate"),
-        ("activity", "自殺者数", "suicide_deaths_vital"),
-        ("work", "公共インフラ完了記載", "infra_completion_mentions"),
-    ]
-    parts = ['<div class="metric-row">']
-    for icon, title, indicator_id in cards:
-        if indicator_id in by_id.index and pd.notna(by_id.loc[indicator_id, "value"]):
-            row = by_id.loc[indicator_id]
-            value = f'{row["value"]:,.1f}'.rstrip("0").rstrip(".")
-            sub = f'{row["period_label"]} / {row["unit"]}'
-        else:
-            value = "NO DATA"
-            sub = ""
-        parts.append(
-            f"""
-            <div class="metric-chip">
-              <div class="metric-chip-title">{ICONS.get(icon, "")}<span>{title}</span></div>
-              <div class="metric-chip-value">{value}</div>
-              <div class="metric-chip-sub">{sub}</div>
-            </div>
-            """
-        )
-    parts.append("</div>")
-    st.markdown("".join(parts), unsafe_allow_html=True)
-
-
 def main() -> None:
     df = load_indicator_data(DATA_VERSION)
     area_options = [area for area in AREA_OPTIONS if area in set(df["area_name"])]
@@ -685,7 +618,6 @@ def main() -> None:
         unsafe_allow_html=True,
     )
     area_df = df[df["area_name"] == selected_area].copy()
-    render_top_snapshot(area_df)
     render_area_map(area_options, selected_area)
 
     graph_tab, summary_tab, data_tab, source_tab = st.tabs(["復興指標グラフ", "要約", "データ", "出典・取得状況"])
