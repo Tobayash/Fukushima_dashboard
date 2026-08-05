@@ -315,16 +315,24 @@ def svg_area_labels(label_points: dict[str, tuple[float, float]], selected_area:
 
 def mark_svg_target_paths(svg_text: str, area_options: list[str], selected_area: str) -> str:
     target_names = set(area_options)
+    path_pattern = re.compile(r'<path\b[^>]*>', re.S)
 
     def replace_path(match: re.Match[str]) -> str:
         path_tag = match.group(0)
-        area_name = match.group(1)
+        name_match = re.search(r'data-name="([^"]+)"', path_tag)
+        if not name_match:
+            return path_tag
+        area_name = name_match.group(1)
         if area_name not in target_names:
             return path_tag
 
         extra_classes = "target-area selected-area" if area_name == selected_area else "target-area"
         if 'class="' in path_tag:
-            path_tag = re.sub(r'class="([^"]*)"', rf'class="\1 {extra_classes}"', path_tag, count=1)
+            class_match = re.search(r'class="([^"]*)"', path_tag)
+            current_class = class_match.group(1) if class_match else ""
+            class_names = [name for name in current_class.split() if name not in {"target-area", "selected-area"}]
+            class_names.extend(extra_classes.split())
+            path_tag = re.sub(r'class="[^"]*"', f'class="{" ".join(class_names)}"', path_tag, count=1)
         else:
             path_tag = path_tag.replace("<path", f'<path class="{extra_classes}"', 1)
 
@@ -333,7 +341,44 @@ def mark_svg_target_paths(svg_text: str, area_options: list[str], selected_area:
 
         return path_tag
 
-    return re.sub(r'<path\b(?=[^>]*data-name="([^"]+)")[^>]*>', replace_path, svg_text)
+    return path_pattern.sub(replace_path, svg_text)
+
+
+def style_svg_area_paths(svg_text: str, area_options: list[str], selected_area: str) -> str:
+    target_names = set(area_options)
+    path_pattern = re.compile(r'<path\b[^>]*>', re.S)
+
+    def replace_attr(tag: str, attr: str, value: str) -> str:
+        if re.search(rf'\b{attr}="[^"]*"', tag):
+            return re.sub(rf'\b{attr}="[^"]*"', f'{attr}="{value}"', tag, count=1)
+        if tag.endswith("/>"):
+            return tag[:-2] + f' {attr}="{value}"/>'
+        return tag.replace(">", f' {attr}="{value}">', 1)
+
+    def replace_path(match: re.Match[str]) -> str:
+        path_tag = match.group(0)
+        name_match = re.search(r'data-name="([^"]+)"', path_tag)
+        if not name_match:
+            return path_tag
+        area_name = name_match.group(1)
+        if area_name == selected_area:
+            path_tag = replace_attr(path_tag, "fill", "#d65f45")
+            path_tag = replace_attr(path_tag, "stroke", "#1f2a30")
+            path_tag = replace_attr(path_tag, "stroke-width", "20")
+            path_tag = replace_attr(path_tag, "opacity", "1")
+        elif area_name in target_names:
+            path_tag = replace_attr(path_tag, "fill", "#8fc8b5")
+            path_tag = replace_attr(path_tag, "stroke", "#ffffff")
+            path_tag = replace_attr(path_tag, "stroke-width", "14")
+            path_tag = replace_attr(path_tag, "opacity", "1")
+        else:
+            path_tag = replace_attr(path_tag, "fill", "#e8ece7")
+            path_tag = replace_attr(path_tag, "stroke", "#ffffff")
+            path_tag = replace_attr(path_tag, "stroke-width", "10")
+            path_tag = replace_attr(path_tag, "opacity", ".62")
+        return path_tag
+
+    return path_pattern.sub(replace_path, svg_text)
 
 
 def html_area_label_links(
@@ -371,6 +416,31 @@ def html_area_label_links(
         )
     links.append("</div>")
     return "".join(links)
+
+
+def svg_area_style_rules(area_options: list[str], selected_area: str) -> str:
+    target_selectors = ",\n    ".join(
+        f'.svg-map path[data-name="{area_name}"]' for area_name in area_options
+    )
+    selected_selector = f'.svg-map path[data-name="{selected_area}"]'
+    return f"""
+    {target_selectors} {{
+      fill: #8fc8b5;
+      stroke: #ffffff;
+      stroke-width: 14;
+      opacity: 1;
+    }}
+    {target_selectors}:hover {{
+      fill: #48a084;
+      stroke: #284b43;
+    }}
+    {selected_selector} {{
+      fill: #d65f45;
+      stroke: #1f2a30;
+      stroke-width: 20;
+      opacity: 1;
+    }}
+    """
 
 
 def latest_records(df: pd.DataFrame) -> pd.DataFrame:
@@ -496,7 +566,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
         count=1,
     )
     svg_text = re.sub(r'\swidth="[^"]+"\sheight="[^"]+"', ' width="100%" height="100%"', svg_text, count=1)
-    svg_text = mark_svg_target_paths(svg_text, area_options, selected_area)
+    svg_text = style_svg_area_paths(svg_text, area_options, selected_area)
     map_html = f"""
     <div class="svg-map-shell">
       <div class="svg-map">
@@ -536,28 +606,7 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       display: block;
     }}
     .svg-map path.pref-path {{
-      fill: #e8ece7;
-      stroke: #ffffff;
-      stroke-width: 10;
-      opacity: .62;
       transition: fill .15s ease, stroke .15s ease, opacity .15s ease;
-    }}
-    .svg-map path.target-area {{
-      fill: #8fc8b5;
-      stroke: #ffffff;
-      stroke-width: 14;
-      opacity: 1;
-      cursor: pointer;
-    }}
-    .svg-map path.target-area:hover {{
-      fill: #48a084;
-      stroke: #284b43;
-    }}
-    .svg-map path.selected-area {{
-      fill: #d65f45;
-      stroke: #1f2a30;
-      stroke-width: 20;
-      opacity: 1;
     }}
     .target-label {{
       font-size: 78px;
