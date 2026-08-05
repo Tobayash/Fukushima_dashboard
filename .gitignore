@@ -9,5 +9,6 @@ data/processed/*
 !data/raw/.gitkeep
 !data/processed/.gitkeep
 !data/raw/fukushima_map_export.png
+!data/raw/fukushima-map-municipalities.svg
 !data/raw/infrastructure_life_industry_indicators_v1.csv
 !data/processed/share_master_indicators.csv

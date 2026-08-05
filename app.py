@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 from io import BytesIO
+import json
 from pathlib import Path
 from urllib.parse import quote
 
@@ -18,6 +19,7 @@ from extractors.health import fetch_suicide_health_indicators
 APP_DIR = Path(__file__).resolve().parent
 SNAPSHOT_DATA_PATH = APP_DIR / "data" / "processed" / "share_master_indicators.csv"
 MAP_IMAGE_PATH = APP_DIR / "data" / "raw" / "fukushima_map_export.png"
+MAP_SVG_PATH = APP_DIR / "data" / "raw" / "fukushima-map-municipalities.svg"
 DATA_VERSION = "2026-08-04-health-suicide-v4"
 AREA_SELECTION_KEY = "area_select_v1"
 INDICATOR_SELECTION_PREFIX = "indicator_select_by_category_v1"
@@ -277,6 +279,10 @@ def sync_query_area(area_options: list[str]) -> None:
 
 def render_area_map(area_options: list[str], selected_area: str) -> None:
     icon_heading("map", "地図から市町村を選択")
+    if MAP_SVG_PATH.exists():
+        render_svg_area_map(area_options, selected_area)
+        return
+
     if not MAP_IMAGE_PATH.exists():
         st.info("地図画像が見つからないため、一覧から選択してください。")
         return
@@ -351,6 +357,113 @@ def render_area_map(area_options: list[str], selected_area: str) -> None:
         if crop:
             st.image(crop, width="stretch")
         st.caption("右の拡大図は地図上の市町村周辺を切り出した暫定表示です。境界だけを正確に抽出する場合は、元PPTXの図形データを市町村単位で分離できるか確認します。")
+
+
+def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
+    svg_text = MAP_SVG_PATH.read_text(encoding="utf-8")
+    svg_text = svg_text.replace('<?xml version="1.0" standalone="no"?>', "")
+    svg_text = svg_text.replace('width="5017.10009765625" height="4010.5"', 'width="100%" height="100%"')
+    available_json = json.dumps(area_options, ensure_ascii=False)
+    selected_json = json.dumps(selected_area, ensure_ascii=False)
+    map_html = f"""
+    <div class="svg-map-shell">
+      <div class="svg-map">
+        {svg_text}
+      </div>
+      <div class="svg-map-caption">
+        <span class="selected-dot"></span>
+        <strong>{selected_area}</strong>
+        <span>地図上の市町村をクリックして切り替えられます。</span>
+      </div>
+    </div>
+    <style>
+    html, body {{
+      margin: 0;
+      padding: 0;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }}
+    .svg-map-shell {{
+      border: 1px solid #d8dee4;
+      border-radius: 8px;
+      background: #f8fafb;
+      padding: 12px;
+    }}
+    .svg-map {{
+      width: 100%;
+      height: 470px;
+      overflow: hidden;
+      border-radius: 6px;
+      background: linear-gradient(180deg, #fafdff 0%, #edf5f2 100%);
+    }}
+    .svg-map svg {{
+      width: 100%;
+      height: 100%;
+      display: block;
+    }}
+    .svg-map path.pref-path {{
+      fill: #dfe7dd;
+      stroke: #ffffff;
+      stroke-width: 10;
+      transition: fill .15s ease, stroke .15s ease, opacity .15s ease;
+    }}
+    .svg-map path.target-area {{
+      fill: #9ecfbd;
+      stroke: #ffffff;
+      stroke-width: 11;
+      cursor: pointer;
+    }}
+    .svg-map path.target-area:hover {{
+      fill: #48a084;
+      stroke: #284b43;
+    }}
+    .svg-map path.selected-area {{
+      fill: #d65f45;
+      stroke: #1f2a30;
+      stroke-width: 16;
+    }}
+    .svg-map-caption {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 9px;
+      color: #4f5f68;
+      font-size: 13px;
+    }}
+    .selected-dot {{
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: #d65f45;
+      border: 1px solid #1f2a30;
+      display: inline-block;
+    }}
+    </style>
+    <script>
+    const availableAreas = new Set({available_json});
+    const selectedArea = {selected_json};
+    document.querySelectorAll('.svg-map path[data-name]').forEach((path) => {{
+      const name = path.getAttribute('data-name');
+      path.setAttribute('tabindex', availableAreas.has(name) ? '0' : '-1');
+      if (availableAreas.has(name)) {{
+        path.classList.add('target-area');
+        path.addEventListener('click', () => {{
+          window.top.location.href = '/?area=' + encodeURIComponent(name);
+        }});
+        path.addEventListener('keydown', (event) => {{
+          if (event.key === 'Enter' || event.key === ' ') {{
+            event.preventDefault();
+            window.top.location.href = '/?area=' + encodeURIComponent(name);
+          }}
+        }});
+      }}
+      if (name === selectedArea) {{
+        path.classList.add('selected-area');
+      }}
+    }});
+    </script>
+    """
+    components.html(map_html, height=545)
 
 
 def render_indicator_selector(df: pd.DataFrame) -> list[str]:
