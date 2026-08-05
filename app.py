@@ -147,7 +147,7 @@ st.markdown(
     """
     <style>
     .block-container {
-        padding-top: 1.4rem;
+        padding-top: 2.4rem;
         padding-bottom: 2rem;
     }
     [data-testid="stSidebar"] {
@@ -156,8 +156,11 @@ st.markdown(
     .dashboard-title {
         font-size: 1.85rem;
         font-weight: 800;
-        line-height: 1.25;
-        margin-bottom: .2rem;
+        line-height: 1.4;
+        margin: .1rem 0 .25rem;
+        padding-top: .15rem;
+        padding-bottom: .05rem;
+        overflow: visible;
     }
     .dashboard-subtitle {
         color: #52616f;
