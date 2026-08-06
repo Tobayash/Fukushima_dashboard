@@ -696,13 +696,17 @@ def no_data_message(area_name: str, indicator_ids: list[str], df: pd.DataFrame) 
         st.caption(f"{area_name}で表示可能なデータがない指標: " + "、".join(missing))
 
 
-def value_axis_label(data: pd.DataFrame) -> str:
+def value_axis_label(data: pd.DataFrame, title: str | None = None) -> str:
+    names = [name for name in data["indicator_name"].dropna().astype(str).unique() if name]
     units = [unit for unit in data["unit"].dropna().astype(str).unique() if unit]
+    measure = title or "値"
+    if len(names) == 1:
+        measure = names[0]
     if len(units) == 1:
-        return f"値（{units[0]}）"
+        return f"{measure}（{units[0]}）"
     if len(units) > 1:
-        return "値（単位混在）"
-    return "値"
+        return f"{measure}（単位混在）"
+    return measure
 
 
 def time_position_note(data: pd.DataFrame) -> str | None:
@@ -748,7 +752,7 @@ def population_estimate_note(data: pd.DataFrame) -> str | None:
 
 
 def render_line_chart(data: pd.DataFrame, title: str) -> None:
-    y_label = value_axis_label(data)
+    y_label = value_axis_label(data, title)
     fig = px.line(
         data,
         x="period_dt",
@@ -775,7 +779,7 @@ def render_line_chart(data: pd.DataFrame, title: str) -> None:
 def render_latest_bar_chart(data: pd.DataFrame, title: str) -> None:
     if data.empty:
         return
-    y_label = value_axis_label(data)
+    y_label = value_axis_label(data, title)
     fig = px.bar(
         data,
         x="indicator_name",
