@@ -385,6 +385,28 @@ def style_svg_area_paths(svg_text: str, area_options: list[str], selected_area: 
     return path_pattern.sub(replace_path, svg_text)
 
 
+def link_svg_area_paths(svg_text: str, area_options: list[str]) -> str:
+    target_names = set(area_options)
+    path_pattern = re.compile(r'<path\b[^>]*>', re.S)
+
+    def replace_path(match: re.Match[str]) -> str:
+        path_tag = match.group(0)
+        name_match = re.search(r'data-name="([^"]+)"', path_tag)
+        if not name_match:
+            return path_tag
+        area_name = name_match.group(1)
+        if area_name not in target_names:
+            return path_tag
+        href = f"?area={quote(area_name)}"
+        label = escape(f"{area_name}を表示")
+        return (
+            f'<a class="svg-area-link" href="{href}" xlink:href="{href}" target="_top" '
+            f'aria-label="{label}" title="{escape(area_name)}">{path_tag}</a>'
+        )
+
+    return path_pattern.sub(replace_path, svg_text)
+
+
 def html_area_label_links(
     label_points: dict[str, tuple[float, float]],
     view_box: tuple[float, float, float, float],
@@ -415,7 +437,8 @@ def html_area_label_links(
         top = ((y + dy - view_y) / view_h) * 100
         selected_class = " selected-label-link" if area_name == selected_area else ""
         links.append(
-            f'<a class="map-label-link{selected_class}" href="/?area={quote(area_name)}" target="_top" '
+            f'<a class="map-label-link{selected_class}" href="?area={quote(area_name)}" target="_self" '
+            f'title="{escape(area_name)}" aria-label="{escape(area_name)}を表示" '
             f'style="left:{left:.3f}%; top:{top:.3f}%;">{escape(area_name)}</a>'
         )
     links.append("</div>")
@@ -572,6 +595,8 @@ def render_area_map(area_options: list[str], selected_area: str) -> None:
 def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     svg_text = MAP_SVG_PATH.read_text(encoding="utf-8")
     svg_text = svg_text.replace('<?xml version="1.0" standalone="no"?>', "")
+    if "xmlns:xlink" not in svg_text:
+        svg_text = svg_text.replace("<svg ", '<svg xmlns:xlink="http://www.w3.org/1999/xlink" ', 1)
     view_box, label_points = svg_path_bounds(svg_text, area_options)
     view_x, view_y, view_w, view_h = view_box
     map_aspect_ratio = max(view_w / view_h, 0.1)
@@ -584,11 +609,14 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     )
     svg_text = re.sub(r'\swidth="[^"]+"\sheight="[^"]+"', ' width="100%" height="auto"', svg_text, count=1)
     svg_text = style_svg_area_paths(svg_text, area_options, selected_area)
+    svg_text = link_svg_area_paths(svg_text, area_options)
     svg_text = svg_text.replace("</svg>", f"{svg_labels}</svg>", 1)
+    label_links = html_area_label_links(label_points, view_box, selected_area)
     map_html = f"""
     <div class="svg-map-shell">
       <div class="svg-map">
         {svg_text}
+        {label_links}
       </div>
       <div class="svg-map-caption">
         <span class="selected-dot"></span>
@@ -627,6 +655,41 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     }}
     .svg-map path.pref-path {{
       transition: fill .15s ease, stroke .15s ease, opacity .15s ease;
+    }}
+    .map-label-layer {{
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      pointer-events: none;
+    }}
+    .map-label-link {{
+      position: absolute;
+      transform: translate(-50%, -50%);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 4.8em;
+      min-height: 2.2em;
+      padding: 4px 8px;
+      border-radius: 999px;
+      color: transparent;
+      text-decoration: none;
+      pointer-events: auto;
+      white-space: nowrap;
+    }}
+    .map-label-link:hover,
+    .map-label-link:focus {{
+      background: rgba(214, 95, 69, .14);
+      outline: 2px solid rgba(214, 95, 69, .5);
+      outline-offset: 2px;
+    }}
+    .svg-area-link {{
+      cursor: pointer;
+      outline: none;
+    }}
+    .svg-area-link:focus path.pref-path {{
+      stroke: #284b43;
+      stroke-width: 24;
     }}
     .target-label {{
       font-size: 78px;
