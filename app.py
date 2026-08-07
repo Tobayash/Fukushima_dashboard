@@ -445,6 +445,44 @@ def html_area_label_links(
     return "".join(links)
 
 
+def html_area_hit_links(
+    svg_text: str,
+    area_options: list[str],
+    view_box: tuple[float, float, float, float],
+    selected_area: str,
+) -> str:
+    target_names = set(area_options)
+    view_x, view_y, view_w, view_h = view_box
+    path_pattern = re.compile(r'<path\b(?=[^>]*data-name="([^"]+)")(?=[^>]*\sd="([^"]+)")[^>]*>', re.S)
+    number_pattern = re.compile(r"-?\d+(?:\.\d+)?")
+    links = ['<div class="map-hit-layer">']
+
+    for match in path_pattern.finditer(svg_text):
+        area_name, path_d = match.groups()
+        if area_name not in target_names:
+            continue
+        numbers = [float(value) for value in number_pattern.findall(path_d)]
+        xs = numbers[0::2]
+        ys = numbers[1::2]
+        if not xs or not ys:
+            continue
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        left = ((min_x - view_x) / view_w) * 100
+        top = ((min_y - view_y) / view_h) * 100
+        width = ((max_x - min_x) / view_w) * 100
+        height = ((max_y - min_y) / view_h) * 100
+        selected_class = " selected-map-hit" if area_name == selected_area else ""
+        links.append(
+            f'<a class="map-hit-link{selected_class}" href="?area={quote(area_name)}" target="_self" '
+            f'title="{escape(area_name)}" aria-label="{escape(area_name)}を表示" '
+            f'style="left:{left:.3f}%; top:{top:.3f}%; width:{width:.3f}%; height:{height:.3f}%;"></a>'
+        )
+
+    links.append("</div>")
+    return "".join(links)
+
+
 def html_area_chips(area_options: list[str], selected_area: str) -> str:
     chips = ['<div class="map-chip-row">']
     for area_name in area_options:
@@ -611,12 +649,12 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     svg_text = style_svg_area_paths(svg_text, area_options, selected_area)
     svg_text = link_svg_area_paths(svg_text, area_options)
     svg_text = svg_text.replace("</svg>", f"{svg_labels}</svg>", 1)
-    label_links = html_area_label_links(label_points, view_box, selected_area)
+    hit_links = html_area_hit_links(svg_text, area_options, view_box, selected_area)
     map_html = f"""
     <div class="svg-map-shell">
       <div class="svg-map">
         {svg_text}
-        {label_links}
+        {hit_links}
       </div>
       <div class="svg-map-caption">
         <span class="selected-dot"></span>
@@ -656,28 +694,26 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     .svg-map path.pref-path {{
       transition: fill .15s ease, stroke .15s ease, opacity .15s ease;
     }}
-    .map-label-layer {{
+    .map-hit-layer {{
       position: absolute;
       inset: 0;
       z-index: 3;
       pointer-events: none;
     }}
-    .map-label-link {{
+    .map-hit-link {{
       position: absolute;
-      transform: translate(-50%, -50%);
       display: block;
-      width: 5.8em;
-      height: 2.8em;
-      border-radius: 999px;
+      min-width: 18px;
+      min-height: 18px;
+      border-radius: 6px;
       color: transparent;
-      font-size: 16px;
       text-decoration: none;
       pointer-events: auto;
       overflow: hidden;
       background: transparent;
     }}
-    .map-label-link:hover,
-    .map-label-link:focus {{
+    .map-hit-link:hover,
+    .map-hit-link:focus {{
       background: rgba(214, 95, 69, .14);
       outline: 2px solid rgba(214, 95, 69, .5);
       outline-offset: 2px;
