@@ -166,7 +166,19 @@ st.markdown(
     .dashboard-subtitle {
         color: #52616f;
         font-size: .95rem;
-        margin-bottom: 1rem;
+        margin-bottom: .35rem;
+    }
+    .data-updated {
+        display: inline-flex;
+        align-items: center;
+        gap: .35rem;
+        color: #5c6670;
+        font-size: .86rem;
+        margin: 0 0 1rem;
+        padding: .18rem .55rem;
+        border: 1px solid #d8dee4;
+        border-radius: 999px;
+        background: #f8fafb;
     }
     .section-note {
         color: #5c6670;
@@ -236,6 +248,17 @@ def load_indicator_data(version: str) -> pd.DataFrame:
     df["period_label"] = df["period_dt"].dt.strftime("%Y-%m-%d")
     df.loc[df["period_label"].isna(), "period_label"] = df["period"].fillna("")
     return df
+
+
+def data_updated_label(df: pd.DataFrame) -> str:
+    if "retrieved_at" in df.columns:
+        retrieved = pd.to_datetime(df["retrieved_at"], errors="coerce", utc=True).dropna()
+        if not retrieved.empty:
+            latest = retrieved.max().tz_convert("Asia/Tokyo")
+            return f"{latest.year}年{latest.month}月{latest.day}日"
+
+    modified = pd.Timestamp(SNAPSHOT_DATA_PATH.stat().st_mtime, unit="s", tz="Asia/Tokyo")
+    return f"{modified.year}年{modified.month}月{modified.day}日"
 
 
 @st.cache_data(show_spinner=False)
@@ -677,12 +700,12 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
       pointer-events: auto;
       overflow: hidden;
       background: transparent;
+      outline: none;
     }}
     .map-label-link:hover,
     .map-label-link:focus {{
-      background: rgba(214, 95, 69, .14);
-      outline: 2px solid rgba(214, 95, 69, .5);
-      outline-offset: 2px;
+      background: transparent;
+      outline: none;
     }}
     .svg-area-link {{
       cursor: pointer;
@@ -1064,6 +1087,10 @@ def main() -> None:
     st.markdown('<div class="dashboard-title">福島県復興指標ダッシュボード</div>', unsafe_allow_html=True)
     st.markdown(
         f'<div class="dashboard-subtitle">{selected_area}の復興関連指標を、公開データ・公的資料から確認できる範囲で表示します。データがない項目はNO DATAとして扱います。</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="data-updated">データ更新日: {data_updated_label(df)}</div>',
         unsafe_allow_html=True,
     )
     area_df = df[df["area_name"] == selected_area].copy()
