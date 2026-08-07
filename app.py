@@ -439,7 +439,7 @@ def html_area_label_links(
         links.append(
             f'<a class="map-label-link{selected_class}" href="?area={quote(area_name)}" target="_self" '
             f'title="{escape(area_name)}" aria-label="{escape(area_name)}を表示" '
-            f'style="left:{left:.3f}%; top:{top:.3f}%;">{escape(area_name)}</a>'
+            f'style="left:{left:.3f}%; top:{top:.3f}%;"></a>'
         )
     links.append("</div>")
     return "".join(links)
@@ -665,17 +665,16 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     .map-label-link {{
       position: absolute;
       transform: translate(-50%, -50%);
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 4.8em;
-      min-height: 2.2em;
-      padding: 4px 8px;
+      display: block;
+      width: 5.8em;
+      height: 2.8em;
       border-radius: 999px;
       color: transparent;
+      font-size: 16px;
       text-decoration: none;
       pointer-events: auto;
-      white-space: nowrap;
+      overflow: hidden;
+      background: transparent;
     }}
     .map-label-link:hover,
     .map-label-link:focus {{
