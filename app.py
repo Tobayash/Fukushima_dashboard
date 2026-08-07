@@ -436,7 +436,7 @@ def html_area_label_links(
         left = ((x + dx - view_x) / view_w) * 100
         top = ((y + dy - view_y) / view_h) * 100
         selected_class = " selected-label-link" if area_name == selected_area else ""
-        hit_width = max(4.0, len(area_name) * 1.15)
+        hit_width = 3.35 if len(area_name) <= 3 else len(area_name) * 1.18
         links.append(
             f'<a class="map-label-link{selected_class}" href="?area={quote(area_name)}" target="_self" '
             f'title="{escape(area_name)}" aria-label="{escape(area_name)}を表示" '
@@ -659,13 +659,16 @@ def render_svg_area_map(area_options: list[str], selected_area: str) -> None:
     }}
     .map-label-layer {{
       position: absolute;
-      inset: 0;
+      left: 23.825%;
+      top: 0;
+      width: 52.381%;
+      height: 100%;
       z-index: 3;
       pointer-events: none;
     }}
     .map-label-link {{
       position: absolute;
-      transform: translate(-50%, -58%);
+      transform: translate(-50%, -73%);
       display: block;
       height: 1.65em;
       border-radius: 999px;
