@@ -12,3 +12,4 @@ data/processed/*
 !data/raw/fukushima-map-municipalities.svg
 !data/raw/infrastructure_life_industry_indicators_v1.csv
 !data/processed/share_master_indicators.csv
+!data/processed/municipal_context_events.csv

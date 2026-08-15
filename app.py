@@ -4,9 +4,13 @@ import base64
 from html import escape
 from io import BytesIO
 from pathlib import Path
+import random
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urljoin
 
+import requests
+
+from bs4 import BeautifulSoup
 import pandas as pd
 from PIL import Image
 import plotly.express as px
@@ -19,13 +23,19 @@ from extractors.health import fetch_suicide_health_indicators
 
 APP_DIR = Path(__file__).resolve().parent
 SNAPSHOT_DATA_PATH = APP_DIR / "data" / "processed" / "share_master_indicators.csv"
+LOCAL_CONTEXT_PATH = APP_DIR / "data" / "processed" / "municipal_context_events.csv"
 MAP_IMAGE_PATH = APP_DIR / "data" / "raw" / "fukushima_map_export.png"
 MAP_SVG_PATH = APP_DIR / "data" / "raw" / "fukushima-map-municipalities.svg"
-DATA_VERSION = "2026-08-04-health-suicide-v4"
+DATA_VERSION = "2026-08-04-health-suicide-v5-display1990"
 AREA_SELECTION_KEY = "area_select_v1"
 INDICATOR_SELECTION_PREFIX = "indicator_select_by_category_v1"
 HEALTH_INDICATOR_IDS = {"suicide_deaths_vital", "suicide_rate_vital"}
+HEALTH_DUAL_AXIS_IDS = ["suicide_deaths_vital", "suicide_rate_vital"]
 CHART_START_DATE = pd.Timestamp("2011-03-11")
+DISPLAY_MIN_DATE = pd.Timestamp("1990-01-01")
+OFFICIAL_NEWS_URLS = {
+    "南相馬市": "https://www.city.minamisoma.lg.jp/news.html",
+}
 
 AREA_OPTIONS = [
     "南相馬市",
@@ -71,6 +81,17 @@ INDICATOR_GROUPS = {
         "deaths",
         "natural_change",
     ],
+    "帰還意向": [
+        "intention_returned",
+        "intention_want_return",
+        "intention_undecided",
+        "intention_no_return",
+        "intention_no_answer",
+    ],
+    "身体的・精神的健康": [
+        "suicide_deaths_vital",
+        "suicide_rate_vital",
+    ],
     "居住再開・住宅整備": [
         "resident_rate",
         "returnee_housing_planned",
@@ -85,16 +106,12 @@ INDICATOR_GROUPS = {
         "life_commerce_mentions",
         "industry_mentions",
     ],
-    "身体的・精神的健康": [
-        "suicide_deaths_vital",
-        "suicide_rate_vital",
-    ],
-    "帰還意向": [
-        "intention_returned",
-        "intention_want_return",
-        "intention_undecided",
-        "intention_no_return",
-        "intention_no_answer",
+    "行政・地域の取り組み": [
+        "context_event_count",
+        "context_report_count",
+        "context_initiative_count",
+        "context_survey_count",
+        "context_topic_count",
     ],
 }
 
@@ -114,9 +131,14 @@ DEFAULT_INDICATORS = [
     "industry_mentions",
     "suicide_deaths_vital",
     "suicide_rate_vital",
+    "context_event_count",
+    "context_initiative_count",
+    "context_report_count",
     "intention_returned",
     "intention_want_return",
+    "intention_undecided",
     "intention_no_return",
+    "intention_no_answer",
 ]
 
 INTENTION_IDS = [
@@ -135,7 +157,42 @@ DYNAMICS_IDS = [
     "social_change",
     "natural_change",
 ]
+CHART_GROUPS = [
+    ("帰還者向け住宅整備", ["returnee_housing_planned", "returnee_housing_completed"]),
+    ("公共インフラ工程表", ["infra_completion_mentions", "infra_future_mentions"]),
+    (
+        "生活機能・産業関連記載数",
+        ["life_medical_mentions", "life_school_mentions", "life_commerce_mentions", "industry_mentions"],
+    ),
+    (
+        "行政・地域の取り組み",
+        [
+            "context_event_count",
+            "context_report_count",
+            "context_initiative_count",
+            "context_survey_count",
+            "context_topic_count",
+        ],
+    ),
+]
+CONTEXT_CHART_IDS = [
+    "context_event_count",
+    "context_report_count",
+    "context_initiative_count",
+    "context_survey_count",
+    "context_topic_count",
+]
 POPULATION_ESTIMATE_IDS = {"current_population", "households"}
+POPULATION_HOUSEHOLD_IDS = ["current_population", "households"]
+SUMMARY_GROUP_ICONS = {
+    "人口・世帯": "people",
+    "人口動態（移動・自然）": "activity",
+    "帰還意向": "home",
+    "身体的・精神的健康": "heart",
+    "居住再開・住宅整備": "home",
+    "公共インフラ・生活機能・産業": "work",
+    "行政・地域の取り組み": "community",
+}
 
 
 st.set_page_config(
@@ -147,12 +204,27 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    :root {
+        --app-bg: #f7fafb;
+        --panel-bg: #ffffff;
+        --sidebar-bg: #f0f3f6;
+        --text-main: #25313b;
+        --text-muted: #5c6670;
+        --border: #d8dee4;
+        --accent: #0f6b7d;
+        --chip-bg: #f8fafb;
+    }
+    [data-testid="stAppViewContainer"] {
+        background: var(--app-bg);
+        color: var(--text-main);
+    }
     .block-container {
         padding-top: 2.4rem;
         padding-bottom: 2rem;
     }
     [data-testid="stSidebar"] {
         min-width: 360px;
+        background: var(--sidebar-bg);
     }
     .dashboard-title {
         font-size: 1.85rem;
@@ -162,9 +234,10 @@ st.markdown(
         padding-top: .15rem;
         padding-bottom: .05rem;
         overflow: visible;
+        color: var(--text-main);
     }
     .dashboard-subtitle {
-        color: #52616f;
+        color: var(--text-muted);
         font-size: .95rem;
         margin-bottom: .35rem;
     }
@@ -172,17 +245,46 @@ st.markdown(
         display: inline-flex;
         align-items: center;
         gap: .35rem;
-        color: #5c6670;
+        color: var(--text-muted);
         font-size: .86rem;
         margin: 0 0 1rem;
         padding: .18rem .55rem;
-        border: 1px solid #d8dee4;
+        border: 1px solid var(--border);
         border-radius: 999px;
-        background: #f8fafb;
+        background: var(--chip-bg);
     }
     .section-note {
-        color: #5c6670;
+        color: var(--text-muted);
         font-size: .9rem;
+        margin-bottom: .8rem;
+    }
+    .news-card {
+        display: block;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+        background: var(--panel-bg);
+        color: inherit;
+        text-decoration: none;
+        margin: .7rem 0 1rem;
+        box-shadow: 0 8px 24px rgba(15, 38, 51, .06);
+    }
+    .news-card:hover {
+        border-color: var(--accent);
+        text-decoration: none;
+    }
+    .news-card-body {
+        padding: .9rem 1rem;
+    }
+    .news-card-title {
+        font-weight: 800;
+        line-height: 1.45;
+        color: var(--text-main);
+    }
+    .news-card-source {
+        color: var(--text-muted);
+        font-size: .8rem;
+        margin-top: .45rem;
     }
     .icon-heading {
         display: flex;
@@ -191,22 +293,38 @@ st.markdown(
         margin: 1rem 0 .55rem;
         font-size: 1.06rem;
         font-weight: 800;
-        color: #25313b;
+        color: var(--text-main);
     }
     .icon-heading svg {
         width: 19px;
         height: 19px;
-        stroke: #0f6b7d;
+        stroke: var(--accent);
         stroke-width: 2.2;
         fill: none;
         flex: 0 0 auto;
     }
     .source-card {
-        border: 1px solid #d8dee4;
+        border: 1px solid var(--border);
         border-radius: 8px;
         padding: .8rem .9rem;
         margin-bottom: .6rem;
-        background: #fff;
+        background: var(--panel-bg);
+    }
+    [data-testid="stTabs"] [role="tablist"] {
+        gap: .35rem;
+    }
+    [data-testid="stPlotlyChart"] {
+        background: var(--panel-bg);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: .35rem;
+        margin: .35rem 0 .85rem;
+    }
+    [data-testid="stMarkdownContainer"] {
+        color: var(--text-main);
+    }
+    [data-testid="stCaptionContainer"] {
+        color: var(--text-muted);
     }
     </style>
     """,
@@ -224,6 +342,8 @@ ICONS = {
     "home": '<svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v11h14V10"/><path d="M9 21v-7h6v7"/></svg>',
     "activity": '<svg viewBox="0 0 24 24"><path d="M22 12h-4l-3 8-6-16-3 8H2"/></svg>',
     "work": '<svg viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 7V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v2"/><path d="M2 13h20"/></svg>',
+    "community": '<svg viewBox="0 0 24 24"><path d="M12 21s7-4.35 7-11a7 7 0 1 0-14 0c0 6.65 7 11 7 11z"/><circle cx="12" cy="10" r="2.5"/><path d="M8 18h8"/></svg>',
+    "heart": '<svg viewBox="0 0 24 24"><path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 1 0-7.78 7.78L12 21.23l8.84-8.84a5.5 5.5 0 0 0 0-7.78z"/></svg>',
 }
 
 
@@ -234,6 +354,82 @@ def icon_heading(icon: str, text: str) -> None:
     )
 
 
+def apply_dashboard_theme(theme: str) -> None:
+    if theme == "dark":
+        variables = {
+            "app-bg": "#111820",
+            "panel-bg": "#18222d",
+            "sidebar-bg": "#121a23",
+            "text-main": "#eef4f6",
+            "text-muted": "#aeb9c2",
+            "border": "#324352",
+            "accent": "#60c1d4",
+            "chip-bg": "#18222d",
+        }
+    else:
+        variables = {
+            "app-bg": "#f7fafb",
+            "panel-bg": "#ffffff",
+            "sidebar-bg": "#f0f3f6",
+            "text-main": "#25313b",
+            "text-muted": "#5c6670",
+            "border": "#d8dee4",
+            "accent": "#0f6b7d",
+            "chip-bg": "#f8fafb",
+        }
+    css_vars = "\n".join(f"--{key}: {value};" for key, value in variables.items())
+    st.markdown(
+        f"""
+        <style>
+        :root {{
+            {css_vars}
+        }}
+        [data-testid="stHeader"] {{
+            background: rgba(0, 0, 0, 0);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def current_theme() -> str:
+    return st.session_state.get("dashboard_theme", "light")
+
+
+def chart_theme_layout() -> dict:
+    if current_theme() == "dark":
+        return {
+            "template": "plotly_dark",
+            "paper_bgcolor": "#18222d",
+            "plot_bgcolor": "#18222d",
+            "font": {"color": "#eef4f6"},
+            "legend": {"bgcolor": "rgba(0,0,0,0)"},
+        }
+    return {
+        "template": "plotly_white",
+        "paper_bgcolor": "#ffffff",
+        "plot_bgcolor": "#ffffff",
+        "font": {"color": "#25313b"},
+        "legend": {"bgcolor": "rgba(255,255,255,0)"},
+    }
+
+
+def render_plotly_chart(fig: go.Figure) -> None:
+    fig.update_layout(**chart_theme_layout())
+    fig.update_layout(
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.24,
+            xanchor="center",
+            x=0.5,
+        ),
+        legend_title_text="",
+    )
+    st.plotly_chart(fig, width="stretch")
+
+
 @st.cache_data(show_spinner=False)
 def load_indicator_data(version: str) -> pd.DataFrame:
     if not SNAPSHOT_DATA_PATH.exists():
@@ -242,12 +438,93 @@ def load_indicator_data(version: str) -> pd.DataFrame:
     snapshot = pd.read_csv(SNAPSHOT_DATA_PATH, encoding="utf-8-sig")
     snapshot = snapshot[~snapshot["indicator_id"].isin(HEALTH_INDICATOR_IDS)].copy()
     health = fetch_suicide_health_indicators()
-    df = pd.concat([snapshot, health], ignore_index=True)
+    context_indicators = build_context_indicator_rows(load_local_context_events(version))
+    df = pd.concat([snapshot, health, context_indicators], ignore_index=True)
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
     df["period_dt"] = pd.to_datetime(df["period"], errors="coerce", format="mixed")
     df["period_label"] = df["period_dt"].dt.strftime("%Y-%m-%d")
     df.loc[df["period_label"].isna(), "period_label"] = df["period"].fillna("")
+    df = df[df["period_dt"].isna() | (df["period_dt"] >= DISPLAY_MIN_DATE)].copy()
     return df
+
+
+def build_context_indicator_rows(events: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "indicator_id",
+        "indicator_name",
+        "category",
+        "concept",
+        "area_id",
+        "area_name",
+        "area_group",
+        "period",
+        "value",
+        "unit",
+        "source_type",
+        "source_name",
+        "source_url",
+        "retrieved_at",
+        "collection_method",
+        "notes",
+    ]
+    if events.empty or "event_dt" not in events.columns:
+        return pd.DataFrame(columns=columns)
+
+    records: list[dict[str, object]] = []
+    retrieved_at = pd.Timestamp(LOCAL_CONTEXT_PATH.stat().st_mtime, unit="s", tz="UTC").isoformat() if LOCAL_CONTEXT_PATH.exists() else ""
+    indicator_defs = {
+        "context_event_count": "確認済み取り組み・近況件数",
+        "context_report_count": "報告書・計画更新件数",
+        "context_initiative_count": "施策・事業・連携件数",
+        "context_survey_count": "調査・検証・視察件数",
+        "context_topic_count": "内容区分数",
+    }
+    for area_name, group in events.dropna(subset=["event_dt"]).sort_values("event_dt").groupby("area_name"):
+        group = group.copy()
+        text = (
+            group["kind"].fillna("")
+            + " "
+            + group["category"].fillna("")
+            + " "
+            + group["title"].fillna("")
+            + " "
+            + group["summary"].fillna("")
+        )
+        group["_is_report"] = text.str.contains("報告|計画|公表|更新|公告", regex=True)
+        group["_is_initiative"] = text.str.contains("施策|事業|連携|支援|活動|行事|再開|整備", regex=True)
+        group["_is_survey"] = text.str.contains("調査|検証|視察|測定|アンケート", regex=True)
+        for event_dt, date_group in group.groupby("event_dt"):
+            upto = group[group["event_dt"] <= event_dt]
+            values = {
+                "context_event_count": float(len(upto)),
+                "context_report_count": float(upto["_is_report"].sum()),
+                "context_initiative_count": float(upto["_is_initiative"].sum()),
+                "context_survey_count": float(upto["_is_survey"].sum()),
+                "context_topic_count": float(upto["category"].dropna().nunique()),
+            }
+            source_urls = " / ".join(upto["source_url"].dropna().astype(str).unique()[:3])
+            for indicator_id, value in values.items():
+                records.append(
+                    {
+                        "indicator_id": indicator_id,
+                        "indicator_name": indicator_defs[indicator_id],
+                        "category": "行政・地域の取り組み",
+                        "concept": "公開資料・ニュースから確認できる取り組みの蓄積",
+                        "area_id": "",
+                        "area_name": area_name,
+                        "area_group": "避難地域12市町村",
+                        "period": event_dt.strftime("%Y-%m-%d"),
+                        "value": value,
+                        "unit": "件",
+                        "source_type": "自治体HP・公的資料・報道",
+                        "source_name": "確認済み行政・地域取り組みデータ",
+                        "source_url": source_urls,
+                        "retrieved_at": retrieved_at,
+                        "collection_method": "B",
+                        "notes": "確認済み出来事データから累積件数として暫定作成。未確認情報は含めない。",
+                    }
+                )
+    return pd.DataFrame(records, columns=columns)
 
 
 def data_updated_label(df: pd.DataFrame) -> str:
@@ -259,6 +536,31 @@ def data_updated_label(df: pd.DataFrame) -> str:
 
     modified = pd.Timestamp(SNAPSHOT_DATA_PATH.stat().st_mtime, unit="s", tz="Asia/Tokyo")
     return f"{modified.year}年{modified.month}月{modified.day}日"
+
+
+@st.cache_data(show_spinner=False)
+def load_local_context_events(version: str) -> pd.DataFrame:
+    columns = [
+        "area_name",
+        "event_date",
+        "kind",
+        "category",
+        "title",
+        "summary",
+        "source_name",
+        "source_url",
+    ]
+    if not LOCAL_CONTEXT_PATH.exists():
+        return pd.DataFrame(columns=columns + ["event_dt", "event_label"])
+
+    events = pd.read_csv(LOCAL_CONTEXT_PATH, encoding="utf-8-sig")
+    for column in columns:
+        if column not in events.columns:
+            events[column] = ""
+    events["event_dt"] = pd.to_datetime(events["event_date"], errors="coerce", format="mixed")
+    events["event_label"] = events["event_dt"].dt.strftime("%Y-%m-%d")
+    events.loc[events["event_label"].isna(), "event_label"] = events["event_date"].fillna("")
+    return events[columns + ["event_dt", "event_label"]]
 
 
 @st.cache_data(show_spinner=False)
@@ -763,7 +1065,7 @@ def render_indicator_selector(df: pd.DataFrame) -> list[str]:
         if not group_ids:
             continue
         default = [indicator_id for indicator_id in group_ids if indicator_id in DEFAULT_INDICATORS]
-        with st.sidebar.expander(group_name, expanded=group_name in {"人口・世帯", "人口動態（移動・自然）"}):
+        with st.sidebar.expander(group_name, expanded=group_name in {"人口・世帯", "人口動態（移動・自然）", "行政・地域の取り組み"}):
             picked_labels = st.multiselect(
                 "表示する指標",
                 options=[labels[indicator_id] for indicator_id in group_ids],
@@ -851,16 +1153,271 @@ def render_line_chart(data: pd.DataFrame, title: str) -> None:
         title=title,
     )
     fig.update_yaxes(title_text=y_label)
-    fig.update_xaxes(title_text="時点")
+    valid_dates = data["period_dt"].dropna()
+    if not valid_dates.empty:
+        fig.update_xaxes(title_text="時点", range=[valid_dates.min(), valid_dates.max()])
+    else:
+        fig.update_xaxes(title_text="時点")
     fig.update_layout(
-        height=360,
-        margin=dict(l=10, r=10, t=50, b=10),
+        height=430,
+        margin=dict(l=10, r=10, t=54, b=95),
         legend_title_text="",
     )
-    st.plotly_chart(fig, width="stretch")
+    render_plotly_chart(fig)
     notes = [note for note in [population_estimate_note(data), time_position_note(data)] if note]
     if notes:
         st.caption(" ".join(notes))
+
+
+FLOW_INDICATOR_IDS = set(DYNAMICS_IDS)
+
+
+def annualize_indicator_data(data: pd.DataFrame, flow_ids: set[str] | None = None) -> pd.DataFrame:
+    flow_ids = flow_ids or set()
+    valid = data[data["value"].notna() & data["period_dt"].notna()].copy()
+    if valid.empty:
+        return data.copy()
+
+    meta_columns = [
+        "area_code",
+        "area_name",
+        "category",
+        "indicator_id",
+        "indicator_name",
+        "unit",
+        "source_type",
+        "source_name",
+        "source_url",
+        "retrieved_at",
+        "collection_method",
+        "notes",
+    ]
+    meta_columns = [column for column in meta_columns if column in valid.columns]
+    valid["_year"] = valid["period_dt"].dt.year
+
+    yearly_rows: list[pd.Series] = []
+    for (indicator_id, year), group in valid.sort_values("period_dt").groupby(["indicator_id", "_year"]):
+        group = group.copy()
+        if indicator_id in flow_ids:
+            row = group.iloc[-1].copy()
+            row["value"] = group["value"].sum()
+            row["period"] = str(year)
+            row["period_dt"] = pd.Timestamp(year=int(year), month=12, day=31)
+            row["period_label"] = f"{int(year)}年"
+        else:
+            if indicator_id in POPULATION_HOUSEHOLD_IDS and int(year) % 5 == 0:
+                census_group = group[group["period_dt"].dt.month.eq(10)]
+                row = (census_group.iloc[-1] if not census_group.empty else group.iloc[-1]).copy()
+            else:
+                row = group.iloc[-1].copy()
+            row["period"] = str(year)
+            row["period_label"] = f"{int(year)}年"
+        yearly_rows.append(row[meta_columns + ["period", "period_dt", "period_label", "value"]])
+
+    return pd.DataFrame(yearly_rows).reset_index(drop=True)
+
+
+def apply_time_grain(data: pd.DataFrame, grain: str, flow_ids: set[str] | None = None) -> pd.DataFrame:
+    if grain == "year":
+        return annualize_indicator_data(data, flow_ids=flow_ids)
+    return data.copy()
+
+
+def grain_label(grain: str) -> str:
+    return "年単位" if grain == "year" else "月単位"
+
+
+def get_time_grain(key: str) -> str:
+    state_key = f"{key}_grain"
+    if state_key not in st.session_state:
+        st.session_state[state_key] = "year"
+    return st.session_state[state_key]
+
+
+def render_time_grain_buttons(key: str) -> None:
+    state_key = f"{key}_grain"
+    current = get_time_grain(key)
+    col_year, col_month, _ = st.columns([1, 1, 4])
+    with col_year:
+        if st.button(
+            "年単位",
+            key=f"{key}_year_button",
+            type="primary" if current == "year" else "secondary",
+            width="stretch",
+        ):
+            st.session_state[state_key] = "year"
+            st.rerun()
+    with col_month:
+        if st.button(
+            "月単位",
+            key=f"{key}_month_button",
+            type="primary" if current == "month" else "secondary",
+            width="stretch",
+        ):
+            st.session_state[state_key] = "month"
+            st.rerun()
+
+
+def census_jump_segments(group: pd.DataFrame, threshold: float = 0.05) -> set[int]:
+    ordered = group.dropna(subset=["value", "period_dt"]).sort_values("period_dt").copy()
+    if len(ordered) < 2:
+        return set()
+    ordered["previous_value"] = ordered["value"].shift(1)
+    denominator = ordered["previous_value"].abs().replace(0, pd.NA)
+    ordered["change_rate"] = (ordered["value"] - ordered["previous_value"]).abs() / denominator
+    flagged = ordered[
+        ordered["previous_value"].notna()
+        & (ordered["change_rate"] >= threshold)
+        & ordered["period_dt"].dt.month.eq(10)
+        & ordered["period_dt"].dt.year.mod(5).eq(0)
+    ]
+    return set(flagged.index)
+
+
+def render_population_household_chart(data: pd.DataFrame, mark_all_census_segments: bool = False) -> None:
+    plot_data = data[
+        data["indicator_id"].isin(POPULATION_HOUSEHOLD_IDS)
+        & data["value"].notna()
+        & data["period_dt"].notna()
+    ].copy()
+    if plot_data.empty:
+        return
+
+    fig = go.Figure()
+    colors = {"current_population": "#0f6b7d", "households": "#d95f43"}
+    axes = {"current_population": "y", "households": "y2"}
+    names = {"current_population": "現住人口", "households": "世帯数"}
+    jump_notes: list[str] = []
+
+    for indicator_id in POPULATION_HOUSEHOLD_IDS:
+        group = plot_data[plot_data["indicator_id"] == indicator_id].sort_values("period_dt").copy()
+        if group.empty:
+            continue
+        jump_idx = census_jump_segments(group, threshold=0 if mark_all_census_segments else 0.05)
+        if jump_idx:
+            for idx in jump_idx:
+                row_position = group.index.get_loc(idx)
+                if row_position > 0:
+                    previous = group.iloc[row_position - 1]
+                    current = group.loc[idx]
+                    jump_notes.append(f"{names[indicator_id]}: {previous['period_label']}→{current['period_label']}")
+
+        solid_x: list[pd.Timestamp | None] = []
+        solid_y: list[float | None] = []
+        rows = list(group.itertuples())
+        for i, row in enumerate(rows):
+            if i > 0 and row.Index in jump_idx:
+                solid_x.append(None)
+                solid_y.append(None)
+            solid_x.append(row.period_dt)
+            solid_y.append(row.value)
+
+        fig.add_trace(
+            go.Scatter(
+                x=solid_x,
+                y=solid_y,
+                mode="lines",
+                name=names[indicator_id],
+                line=dict(color=colors[indicator_id], width=2.4),
+                yaxis=axes[indicator_id],
+                hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}<extra>" + names[indicator_id] + "</extra>",
+            )
+        )
+
+        for idx in jump_idx:
+            row_position = group.index.get_loc(idx)
+            if row_position == 0:
+                continue
+            previous = group.iloc[row_position - 1]
+            current = group.loc[idx]
+            fig.add_trace(
+                go.Scatter(
+                    x=[previous["period_dt"], current["period_dt"]],
+                    y=[previous["value"], current["value"]],
+                    mode="lines",
+                    name=f"{names[indicator_id]}（国勢調査年補正付近）",
+                    line=dict(color=colors[indicator_id], width=2.4, dash="dot"),
+                    yaxis=axes[indicator_id],
+                    showlegend=False,
+                    hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.0f}<extra>" + names[indicator_id] + "</extra>",
+                )
+            )
+
+    valid_dates = plot_data["period_dt"].dropna()
+    if not valid_dates.empty:
+        fig.update_xaxes(title_text="時点", range=[valid_dates.min(), valid_dates.max()])
+    fig.update_layout(
+        title="現住人口・世帯数",
+        height=430,
+        margin=dict(l=10, r=10, t=54, b=95),
+        legend_title_text="",
+        yaxis=dict(title="現住人口（人）"),
+        yaxis2=dict(title="世帯数（世帯）", overlaying="y", side="right", showgrid=False),
+    )
+    render_plotly_chart(fig)
+    note = population_estimate_note(plot_data)
+    if jump_notes:
+        if mark_all_census_segments:
+            note = (note or "") + " 年単位データでは、点線は国勢調査年付近の補正・基準更新区間を示します。"
+        else:
+            note = (note or "") + " 点線は国勢調査年付近の比較的大きな段差を示します。"
+    if note:
+        st.caption(note)
+
+
+def render_suicide_health_chart(data: pd.DataFrame) -> None:
+    plot_data = data[
+        data["indicator_id"].isin(HEALTH_DUAL_AXIS_IDS)
+        & data["value"].notna()
+        & data["period_dt"].notna()
+    ].copy()
+    if plot_data.empty:
+        return
+
+    fig = go.Figure()
+    config = {
+        "suicide_deaths_vital": {
+            "name": "自殺者数",
+            "axis": "y",
+            "color": "#6b7280",
+            "title": "自殺者数（人）",
+        },
+        "suicide_rate_vital": {
+            "name": "自殺死亡率",
+            "axis": "y2",
+            "color": "#b84a62",
+            "title": "自殺死亡率（人口10万対）",
+        },
+    }
+    for indicator_id, item in config.items():
+        group = plot_data[plot_data["indicator_id"] == indicator_id].sort_values("period_dt").copy()
+        if group.empty:
+            continue
+        fig.add_trace(
+            go.Scatter(
+                x=group["period_dt"],
+                y=group["value"],
+                mode="lines",
+                name=item["name"],
+                line=dict(color=item["color"], width=2.4),
+                yaxis=item["axis"],
+                hovertemplate="%{x|%Y-%m-%d}<br>%{y:,.1f}<extra>" + item["name"] + "</extra>",
+            )
+        )
+
+    valid_dates = plot_data["period_dt"].dropna()
+    if not valid_dates.empty:
+        fig.update_xaxes(title_text="時点", range=[valid_dates.min(), valid_dates.max()])
+    fig.update_layout(
+        title="自殺者数・自殺死亡率",
+        height=430,
+        margin=dict(l=10, r=10, t=54, b=95),
+        legend_title_text="",
+        yaxis=dict(title=config["suicide_deaths_vital"]["title"]),
+        yaxis2=dict(title=config["suicide_rate_vital"]["title"], overlaying="y", side="right", showgrid=False),
+    )
+    render_plotly_chart(fig)
+    st.caption("自殺死亡率は人口規模が小さい年ではNO DATAとして扱っています。単年度だけでなく、複数年の傾向として確認してください。")
 
 
 def render_latest_bar_chart(data: pd.DataFrame, title: str) -> None:
@@ -880,16 +1437,90 @@ def render_latest_bar_chart(data: pd.DataFrame, title: str) -> None:
     fig.update_xaxes(title_text="指標")
     fig.update_traces(textposition="outside", cliponaxis=False)
     fig.update_layout(
-        height=340,
-        margin=dict(l=10, r=10, t=60, b=80),
+        height=430,
+        margin=dict(l=10, r=10, t=54, b=105),
         showlegend=False,
         xaxis_tickangle=-25,
     )
-    st.plotly_chart(fig, width="stretch")
+    render_plotly_chart(fig)
+
+
+def indicator_order_map() -> dict[str, int]:
+    order: dict[str, int] = {}
+    for group_ids in INDICATOR_GROUPS.values():
+        for indicator_id in group_ids:
+            if indicator_id not in order:
+                order[indicator_id] = len(order)
+    return order
+
+
+def sort_by_graph_order(data: pd.DataFrame) -> pd.DataFrame:
+    if data.empty:
+        return data.copy()
+    ordered = data.copy()
+    order = indicator_order_map()
+    ordered["_indicator_order"] = ordered["indicator_id"].map(order).fillna(len(order)).astype(int)
+    ordered["_period_sort"] = ordered["period_dt"].fillna(pd.Timestamp.max)
+    return ordered.sort_values(["_indicator_order", "_period_sort", "period", "indicator_name"]).drop(
+        columns=["_indicator_order", "_period_sort"], errors="ignore"
+    )
+
+
+def filter_data_table(data: pd.DataFrame) -> pd.DataFrame:
+    if data.empty:
+        return data.copy()
+
+    filtered = data.copy()
+    col_category, col_indicator, col_period = st.columns([1.1, 1.4, 1])
+    with col_category:
+        categories = list(dict.fromkeys(sort_by_graph_order(filtered)["category"].dropna().astype(str)))
+        selected_categories = st.multiselect(
+            "カテゴリーで絞り込み",
+            options=categories,
+            default=categories,
+            key="data_filter_categories",
+        )
+    if not selected_categories:
+        st.caption(f"表示中: 0件 / 全{len(data):,}件")
+        return filtered.iloc[0:0].copy()
+    filtered = filtered[filtered["category"].astype(str).isin(selected_categories)].copy()
+
+    with col_indicator:
+        indicator_labels = list(dict.fromkeys(sort_by_graph_order(filtered)["indicator_name"].dropna().astype(str)))
+        selected_indicators = st.multiselect(
+            "指標で絞り込み",
+            options=indicator_labels,
+            default=indicator_labels,
+            key="data_filter_indicators",
+        )
+    if not selected_indicators:
+        st.caption(f"表示中: 0件 / 全{len(data):,}件")
+        return filtered.iloc[0:0].copy()
+    filtered = filtered[filtered["indicator_name"].astype(str).isin(selected_indicators)].copy()
+
+    with col_period:
+        keyword = st.text_input(
+            "時点・出典・備考を検索",
+            value="",
+            key="data_filter_keyword",
+            placeholder="例: 2020 / 福島県",
+        ).strip()
+    if keyword:
+        searchable = (
+            filtered["period_label"].fillna("").astype(str)
+            + " "
+            + filtered["source_name"].fillna("").astype(str)
+            + " "
+            + filtered["notes"].fillna("").astype(str)
+        )
+        filtered = filtered[searchable.str.contains(re.escape(keyword), case=False, na=False)].copy()
+
+    st.caption(f"表示中: {len(filtered):,}件 / 全{len(data):,}件")
+    return filtered
 
 
 def render_latest_table(area_df: pd.DataFrame) -> None:
-    latest = latest_records(area_df)
+    latest = sort_by_graph_order(latest_records(area_df))
     if latest.empty:
         st.info("最新値として表示できるデータがありません。")
         return
@@ -907,6 +1538,419 @@ def render_latest_table(area_df: pd.DataFrame) -> None:
         }
     )
     st.dataframe(view, width="stretch", hide_index=True)
+
+
+def date_range_slider(area_df: pd.DataFrame) -> tuple[pd.Timestamp, pd.Timestamp]:
+    valid_dates = area_df["period_dt"].dropna()
+    if valid_dates.empty:
+        return CHART_START_DATE, pd.Timestamp.now()
+
+    min_date = max(valid_dates.min(), DISPLAY_MIN_DATE)
+    max_date = valid_dates.max()
+    if max_date <= min_date:
+        return min_date, max_date
+    default_start = CHART_START_DATE if min_date <= CHART_START_DATE <= max_date else min_date
+
+    st.sidebar.markdown("#### 表示期間")
+    start, end = st.sidebar.slider(
+        "表示期間",
+        min_value=min_date.to_pydatetime(),
+        max_value=max_date.to_pydatetime(),
+        value=(default_start.to_pydatetime(), max_date.to_pydatetime()),
+        format="YYYY/MM",
+        help="1990年1月以降から選択できます。デフォルトの開始時点だけ2011年3月11日にしています。",
+        label_visibility="collapsed",
+    )
+    return pd.Timestamp(start), pd.Timestamp(end)
+
+
+def local_context_for_area(area_name: str) -> pd.DataFrame:
+    events = load_local_context_events(DATA_VERSION)
+    if events.empty:
+        return events
+    return events[events["area_name"] == area_name].sort_values("event_dt", ascending=False).copy()
+
+
+def render_local_context_events(area_name: str) -> None:
+    st.markdown(
+        '<div class="section-note">'
+        '公開資料・公的機関・報道等から確認できた取り組みや近況を、復興指標の背景情報として表示します。'
+        '確認できない市町村・項目はDATAなしとして扱います。'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    events = local_context_for_area(area_name)
+    if events.empty:
+        st.info(f"{area_name}について、確認済みの行政・地域の取り組み・近況データはまだありません。DATAなしとして扱います。")
+        return
+
+    timeline = events[events["event_dt"].notna()].sort_values("event_dt").copy()
+    if timeline["event_dt"].nunique() >= 2:
+        fig = px.scatter(
+            timeline,
+            x="event_dt",
+            y="category",
+            color="kind",
+            hover_name="title",
+            hover_data={"summary": True, "event_label": True, "event_dt": False},
+            labels={"event_dt": "時点", "category": "内容区分", "kind": "種別"},
+            title="確認済みの取り組み・近況",
+        )
+        fig.update_xaxes(title_text="時点")
+        fig.update_yaxes(title_text="内容区分")
+        fig.update_layout(height=max(280, 58 * timeline["category"].nunique()), margin=dict(l=10, r=10, t=50, b=10))
+        render_plotly_chart(fig)
+
+    view = events[
+        ["event_label", "kind", "category", "title", "summary", "source_name", "source_url"]
+    ].rename(
+        columns={
+            "event_label": "時点",
+            "kind": "種別",
+            "category": "内容区分",
+            "title": "項目",
+            "summary": "概要",
+            "source_name": "出典",
+            "source_url": "URL",
+        }
+    )
+    st.dataframe(view, width="stretch", hide_index=True)
+
+
+def render_context_section(area_df: pd.DataFrame, selected_ids: list[str], date_range: tuple[pd.Timestamp, pd.Timestamp]) -> None:
+    active_ids = [indicator_id for indicator_id in CONTEXT_CHART_IDS if indicator_id in selected_ids]
+    if not active_ids:
+        return
+    icon_heading("community", "行政・地域の取り組み")
+    start_date, end_date = date_range
+    data = area_df[
+        area_df["indicator_id"].isin(active_ids)
+        & area_df["value"].notna()
+        & area_df["period_dt"].notna()
+        & (area_df["period_dt"] >= start_date)
+        & (area_df["period_dt"] <= end_date)
+    ].copy()
+    if data["period_dt"].nunique() >= 2:
+        render_line_chart(data, "行政・地域の取り組み")
+    else:
+        latest = latest_records(data)
+        if not latest.empty:
+            render_latest_bar_chart(latest, "行政・地域の取り組み")
+    render_local_context_events(area_df["area_name"].iloc[0])
+
+
+def format_summary_value(value: float, unit: str) -> str:
+    if pd.isna(value):
+        return "NO DATA"
+    if unit in {"人", "世帯", "戸", "件"}:
+        return f"{value:,.0f}{unit}"
+    if unit == "%":
+        return f"{value:,.1f}%"
+    return f"{value:,.1f}{unit}"
+
+
+def trend_word(diff: float, unit: str) -> str:
+    threshold = 0.1 if unit == "%" else 1.0
+    if abs(diff) < threshold:
+        return "おおむね横ばい"
+    return "増加" if diff > 0 else "減少"
+
+
+def build_trend_summary(area_df: pd.DataFrame, selected_ids: list[str], limit: int = 5) -> list[str]:
+    candidates = area_df[
+        area_df["indicator_id"].isin(selected_ids)
+        & area_df["value"].notna()
+        & area_df["period_dt"].notna()
+        & (area_df["period_dt"] >= CHART_START_DATE)
+    ].copy()
+    if candidates.empty:
+        return []
+
+    summaries: list[tuple[pd.Timestamp, str]] = []
+    for _, group in candidates.sort_values(["indicator_name", "period_dt"]).groupby("indicator_id"):
+        if group["period_dt"].nunique() < 2:
+            continue
+        first = group.iloc[0]
+        latest = group.iloc[-1]
+        unit = str(latest.get("unit", ""))
+        diff = latest["value"] - first["value"]
+        sentence = (
+            f"{latest['indicator_name']}は、確認できる初期値（{first['period_label']}："
+            f"{format_summary_value(first['value'], unit)}）から最新値（{latest['period_label']}："
+            f"{format_summary_value(latest['value'], unit)}）にかけて{trend_word(diff, unit)}しています。"
+        )
+        summaries.append((latest["period_dt"], sentence))
+
+    return [sentence for _, sentence in sorted(summaries, key=lambda item: item[0], reverse=True)[:limit]]
+
+
+def trend_records(area_df: pd.DataFrame, selected_ids: list[str]) -> list[dict[str, object]]:
+    candidates = area_df[
+        area_df["indicator_id"].isin(selected_ids)
+        & area_df["value"].notna()
+        & area_df["period_dt"].notna()
+        & (area_df["period_dt"] >= CHART_START_DATE)
+    ].copy()
+    if candidates.empty:
+        return []
+
+    records: list[dict[str, object]] = []
+    for _, group in candidates.sort_values(["indicator_name", "period_dt"]).groupby("indicator_id"):
+        if group["period_dt"].nunique() < 2:
+            continue
+        first = group.iloc[0]
+        latest = group.iloc[-1]
+        diff = latest["value"] - first["value"]
+        denominator = abs(first["value"]) if first["value"] else pd.NA
+        rel_change = abs(diff) / denominator if pd.notna(denominator) and denominator != 0 else abs(diff)
+
+        step_group = group.copy()
+        step_group["previous_value"] = step_group["value"].shift(1)
+        step_group["previous_period_dt"] = step_group["period_dt"].shift(1)
+        step_group["previous_period_label"] = step_group["period_label"].shift(1)
+        step_group["step_diff"] = step_group["value"] - step_group["previous_value"]
+        step_group["step_score"] = step_group["step_diff"].abs()
+        if step_group["previous_value"].abs().max() > 0:
+            step_group["step_score"] = step_group["step_score"] / step_group["previous_value"].abs().replace(0, pd.NA)
+        step_group = step_group[step_group["previous_value"].notna() & step_group["step_score"].notna()]
+        change_row = step_group.sort_values("step_score", ascending=False).head(1)
+        if change_row.empty:
+            change_dt = latest["period_dt"]
+            change_label = latest["period_label"]
+        else:
+            change_dt = change_row.iloc[0]["period_dt"]
+            change_label = change_row.iloc[0]["period_label"]
+
+        records.append(
+            {
+                "indicator_name": latest["indicator_name"],
+                "unit": str(latest.get("unit", "")),
+                "first_label": first["period_label"],
+                "first_value": first["value"],
+                "latest_label": latest["period_label"],
+                "latest_value": latest["value"],
+                "direction": trend_word(diff, str(latest.get("unit", ""))),
+                "score": float(rel_change) if pd.notna(rel_change) else 0.0,
+                "change_dt": change_dt,
+                "change_label": change_label,
+            }
+        )
+    return sorted(records, key=lambda record: record["score"], reverse=True)
+
+
+def event_near_change(context_events: pd.DataFrame, change_dt: object, days: int = 180) -> pd.Series | None:
+    if context_events.empty or pd.isna(change_dt):
+        return None
+    events = context_events[context_events["event_dt"].notna()].copy()
+    if events.empty:
+        return None
+    target = pd.Timestamp(change_dt)
+    events["_distance"] = (events["event_dt"] - target).abs()
+    nearby = events[events["_distance"] <= pd.Timedelta(days=days)].sort_values("_distance")
+    if nearby.empty:
+        return None
+    return nearby.iloc[0]
+
+
+def latest_category_sentence(group_latest: pd.DataFrame) -> str:
+    parts = []
+    for _, row in group_latest.sort_values("indicator_name").head(4).iterrows():
+        parts.append(f"{row['indicator_name']}は{row['period_label']}時点で{format_summary_value(row['value'], str(row['unit']))}")
+    if not parts:
+        return ""
+    return "最新値では、" + "、".join(parts) + "です。"
+
+
+def natural_summary_paragraph(group_latest: pd.DataFrame, records: list[dict[str, object]]) -> str:
+    latest_sentence = latest_category_sentence(group_latest)
+    if not records:
+        return latest_sentence or "このカテゴリーでは、現在選択されている指標について時系列の変化を確認できるデータが不足しています。"
+
+    main = records[0]
+    unit = str(main["unit"])
+    trend_sentence = (
+        f"時系列で見ると、{main['indicator_name']}は{main['first_label']}の"
+        f"{format_summary_value(main['first_value'], unit)}から{main['latest_label']}の"
+        f"{format_summary_value(main['latest_value'], unit)}へ{main['direction']}しています。"
+    )
+    if len(records) >= 2:
+        second = records[1]
+        second_unit = str(second["unit"])
+        trend_sentence += (
+            f"あわせて、{second['indicator_name']}も{second['first_label']}の"
+            f"{format_summary_value(second['first_value'], second_unit)}から{second['latest_label']}の"
+            f"{format_summary_value(second['latest_value'], second_unit)}へ{second['direction']}しています。"
+        )
+    return " ".join(sentence for sentence in [latest_sentence, trend_sentence] if sentence)
+
+
+def overall_evaluation_paragraph(area_df: pd.DataFrame, selected_ids: list[str], context_events: pd.DataFrame) -> str:
+    selected_df = area_df[area_df["indicator_id"].isin(selected_ids)].copy()
+    selected_indicator_count = selected_df["indicator_id"].nunique()
+    latest_count = latest_records(selected_df)["indicator_id"].nunique()
+    records = trend_records(area_df, selected_ids)
+
+    if not records:
+        coverage_sentence = (
+            f"現在選択されている{selected_indicator_count}指標のうち、最新値を確認できるものは"
+            f"{latest_count}指標です。時系列変化を読むには、まだデータが不足している指標があります。"
+        )
+        context_sentence = (
+            "行政・地域の取り組みについては、確認済み情報を背景情報として併記しています。"
+            if not context_events.empty
+            else "行政・地域の取り組みについては、確認済み情報がまだ限られています。"
+        )
+        return coverage_sentence + context_sentence
+
+    direction_counts = {"増加": 0, "減少": 0, "おおむね横ばい": 0}
+    for record in records:
+        direction_counts[str(record["direction"])] = direction_counts.get(str(record["direction"]), 0) + 1
+    top_records = records[:3]
+    focus = "、".join(f"{record['indicator_name']}（{record['direction']}）" for record in top_records)
+    coverage_sentence = (
+        f"現在選択されている{selected_indicator_count}指標のうち、最新値を確認できるものは{latest_count}指標で、"
+        f"時系列変化を確認できる指標は{len(records)}指標です。"
+    )
+    trend_sentence = (
+        f"変化が比較的大きい指標として、{focus}が確認されています。"
+        f"増加傾向は{direction_counts.get('増加', 0)}指標、減少傾向は{direction_counts.get('減少', 0)}指標、"
+        f"おおむね横ばいは{direction_counts.get('おおむね横ばい', 0)}指標です。"
+    )
+    context_sentence = (
+        "行政・地域の取り組み情報も確認できており、指標変化を解釈する際の背景として参照できます。"
+        if not context_events.empty
+        else "一方で、行政・地域の取り組み情報はまだ十分に確認できていないため、指標変化の背景解釈には留意が必要です。"
+    )
+    return coverage_sentence + trend_sentence + context_sentence
+
+
+def render_context_summary(area_name: str) -> None:
+    events = local_context_for_area(area_name)
+    if events.empty:
+        st.write("行政・地域の取り組みや近況については、確認済みの時点情報がまだありません。DATAなしとして扱います。")
+        return
+
+    st.write("同じ期間に確認された行政・地域の取り組み・近況として、以下の情報があります。これらは指標変化の背景として併記するもので、因果関係を示すものではありません。")
+    for _, row in events.head(4).iterrows():
+        source = row["source_name"]
+        if isinstance(row.get("source_url"), str) and row["source_url"].startswith("http"):
+            source = f"[{source}]({row['source_url']})"
+        st.markdown(
+            f"- {row['event_label']}：{row['title']}（{row['category']}）。{row['summary']} 出典：{source}"
+        )
+
+
+@st.cache_data(show_spinner=False, ttl=60 * 60)
+def fetch_recent_news_items(area_name: str) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    cutoff_year = pd.Timestamp.now(tz="Asia/Tokyo") - pd.DateOffset(years=1)
+
+    official_url = OFFICIAL_NEWS_URLS.get(area_name)
+    if official_url:
+        try:
+            response = requests.get(official_url, timeout=6)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            for link in soup.find_all("a"):
+                title = " ".join(link.get_text(" ", strip=True).split())
+                href = link.get("href", "")
+                if not title or not re.search(r"20\d{2}年|令和", title):
+                    continue
+                date_match = re.search(r"(20\d{2})年(\d{1,2})月(\d{1,2})日", title)
+                pub_dt = None
+                if date_match:
+                    pub_dt = pd.Timestamp(
+                        year=int(date_match.group(1)),
+                        month=int(date_match.group(2)),
+                        day=int(date_match.group(3)),
+                        tz="Asia/Tokyo",
+                    )
+                if pub_dt is not None and pub_dt < cutoff_year:
+                    continue
+                href = urljoin(official_url, href)
+                items.append(
+                    {
+                        "title": title,
+                        "url": href or official_url,
+                        "source": f"{area_name}公式ウェブサイト",
+                        "published": pub_dt.strftime("%Y-%m-%d") if pub_dt is not None else "",
+                    }
+                )
+        except Exception:
+            pass
+
+    items.extend(context_event_news_items(area_name))
+
+    deduped: dict[str, dict[str, str]] = {}
+    for item in items:
+        if not item.get("title") or not item.get("url"):
+            continue
+        key = item["url"] or item["title"]
+        if key and key not in deduped:
+            deduped[key] = item
+    return list(deduped.values())
+
+
+def context_event_news_items(area_name: str) -> list[dict[str, str]]:
+    events = local_context_for_area(area_name)
+    if events.empty:
+        return []
+    items: list[dict[str, str]] = []
+    for _, row in events.iterrows():
+        url = str(row.get("source_url", ""))
+        title = str(row.get("title", ""))
+        if not url.startswith("http") or not title:
+            continue
+        items.append(
+            {
+                "title": title,
+                "url": url,
+                "source": str(row.get("source_name", "確認済み資料")),
+                "published": str(row.get("event_label", "")),
+            }
+        )
+    return items
+
+
+def render_news_card(item: dict[str, str], label: str) -> None:
+    title = escape(item.get("title", ""))
+    url = escape(item.get("url", ""))
+    source = escape(label)
+    st.markdown(
+        (
+            f'<a class="news-card" href="{url}" target="_blank" rel="noreferrer">'
+            '<div class="news-card-body">'
+            f'<div class="news-card-title">{title}</div>'
+            f'<div class="news-card-source">{source}</div>'
+            '</div>'
+            '</a>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def render_random_recent_news(area_name: str) -> None:
+    icon_heading("source", "ランダム近況ニュース")
+    st.markdown(
+        '<div class="section-note">'
+        '自治体HPや確認済み資料から、出典ページへのリンクを1件表示します。'
+        '安全な公開運用のため、記事画像・本文要約・スクリーンショットの転載表示は行いません。'
+        'ページを再表示するたびに候補内で変わることがあります。'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    items = fetch_recent_news_items(area_name)
+    if not items:
+        st.info(f"{area_name}について、表示可能な自治体HP・確認済み資料リンクを取得できませんでした。DATAなしとして扱います。")
+        return
+
+    candidate_items = items
+    shuffled = candidate_items.copy()
+    random.shuffle(shuffled)
+    picked = shuffled[0]
+    label = f"{picked['published']} / {picked['source']}" if picked.get("published") else picked["source"]
+    render_news_card(picked, label)
+    st.caption("外部ページへのリンクです。本文・画像は各出典ページで確認してください。")
 
 
 def render_intention_chart(area_df: pd.DataFrame, selected_ids: list[str]) -> None:
@@ -933,11 +1977,12 @@ def render_intention_chart(area_df: pd.DataFrame, selected_ids: list[str]) -> No
         title="帰還意向の推移",
     )
     fig.update_xaxes(range=[0, 100], ticksuffix="%")
-    fig.update_layout(height=max(320, 44 * data["year"].nunique()), margin=dict(l=10, r=10, t=50, b=10))
-    st.plotly_chart(fig, width="stretch")
+    fig.update_layout(height=430, margin=dict(l=10, r=10, t=54, b=95))
+    render_plotly_chart(fig)
 
 
-def render_chart_tab(area_df: pd.DataFrame, selected_ids: list[str]) -> None:
+def render_chart_tab(area_df: pd.DataFrame, selected_ids: list[str], date_range: tuple[pd.Timestamp, pd.Timestamp]) -> None:
+    render_random_recent_news(area_df["area_name"].iloc[0])
     icon_heading("chart", "復興指標グラフ")
     st.markdown(
         '<div class="section-note">'
@@ -947,27 +1992,121 @@ def render_chart_tab(area_df: pd.DataFrame, selected_ids: list[str]) -> None:
         '</div>',
         unsafe_allow_html=True,
     )
+    start_date, end_date = date_range
     chart_df = area_df[
-        area_df["period_dt"].isna() | (area_df["period_dt"] >= CHART_START_DATE)
+        area_df["period_dt"].isna()
+        | ((area_df["period_dt"] >= start_date) & (area_df["period_dt"] <= end_date))
     ].copy()
 
+    chart_columns = st.columns(2, gap="large")
+    chart_index = 0
+
+    def render_in_chart_grid(render_fn) -> None:
+        nonlocal chart_index
+        with chart_columns[chart_index % 2]:
+            render_fn()
+        chart_index += 1
+
     rendered_ids: set[str] = set()
-    dynamics = chart_df[
-        chart_df["indicator_id"].isin([x for x in DYNAMICS_IDS if x in selected_ids])
+    population_household_ids = [indicator_id for indicator_id in POPULATION_HOUSEHOLD_IDS if indicator_id in selected_ids]
+    if population_household_ids:
+        pop_data = chart_df[chart_df["indicator_id"].isin(population_household_ids)].copy()
+        pop_grain = get_time_grain("population_household")
+        pop_data = apply_time_grain(pop_data, pop_grain)
+        if pop_data["period_dt"].nunique() >= 2:
+            render_in_chart_grid(
+                lambda: (
+                    render_population_household_chart(pop_data, mark_all_census_segments=pop_grain == "year"),
+                    render_time_grain_buttons("population_household"),
+                    st.caption(f"表示粒度: {grain_label(pop_grain)}"),
+                )
+            )
+            rendered_ids.update(population_household_ids)
+
+    population_extra_ids = [
+        indicator_id
+        for indicator_id in INDICATOR_GROUPS["人口・世帯"]
+        if indicator_id in selected_ids and indicator_id not in POPULATION_HOUSEHOLD_IDS
+    ]
+    if population_extra_ids:
+        pop_extra_data = chart_df[
+            chart_df["indicator_id"].isin(population_extra_ids)
+            & chart_df["value"].notna()
+            & chart_df["period_dt"].notna()
+        ].copy()
+        pop_extra_grain = get_time_grain("population_household")
+        pop_extra_data = apply_time_grain(pop_extra_data, pop_extra_grain)
+        if pop_extra_data["period_dt"].nunique() >= 2:
+            for _, unit_df in pop_extra_data.groupby("unit", dropna=False):
+                render_in_chart_grid(lambda unit_df=unit_df: render_line_chart(unit_df, "人口・世帯"))
+            rendered_ids.update(pop_extra_data["indicator_id"].unique())
+
+    active_dynamics_ids = [indicator_id for indicator_id in DYNAMICS_IDS if indicator_id in selected_ids]
+    if active_dynamics_ids:
+        dynamics_data = chart_df[
+            chart_df["indicator_id"].isin(active_dynamics_ids)
+            & chart_df["value"].notna()
+            & chart_df["period_dt"].notna()
+        ].copy()
+        dynamics_grain = get_time_grain("population_dynamics")
+        dynamics_data = apply_time_grain(dynamics_data, dynamics_grain, flow_ids=FLOW_INDICATOR_IDS)
+        if dynamics_data["period_dt"].nunique() >= 2:
+            render_in_chart_grid(
+                lambda: (
+                    render_line_chart(dynamics_data, "人口移動・自然動態"),
+                    render_time_grain_buttons("population_dynamics"),
+                    st.caption(f"表示粒度: {grain_label(dynamics_grain)}"),
+                )
+            )
+            rendered_ids.update(dynamics_data["indicator_id"].unique())
+
+    if any(indicator_id in selected_ids for indicator_id in INTENTION_IDS):
+        render_in_chart_grid(lambda: render_intention_chart(chart_df, selected_ids))
+    rendered_ids.update([indicator_id for indicator_id in INTENTION_IDS if indicator_id in selected_ids])
+
+    health_ids = [indicator_id for indicator_id in HEALTH_DUAL_AXIS_IDS if indicator_id in selected_ids]
+    if health_ids:
+        health_data = chart_df[chart_df["indicator_id"].isin(health_ids)].copy()
+        if health_data["period_dt"].nunique() >= 2:
+            render_in_chart_grid(lambda: render_suicide_health_chart(health_data))
+            rendered_ids.update(health_ids)
+
+    for title, group_ids in CHART_GROUPS:
+        if set(group_ids).issubset(set(CONTEXT_CHART_IDS)):
+            continue
+        active_group_ids = [indicator_id for indicator_id in group_ids if indicator_id in selected_ids]
+        if not active_group_ids:
+            continue
+        group_data = chart_df[
+            chart_df["indicator_id"].isin(active_group_ids)
+            & chart_df["value"].notna()
+            & chart_df["period_dt"].notna()
+        ].copy()
+        if group_data["period_dt"].nunique() >= 2 and group_data["indicator_id"].nunique() >= 1:
+            for _, unit_df in group_data.groupby("unit", dropna=False):
+                unit_title = title if group_data["unit"].nunique(dropna=False) <= 1 else f"{title}（{unit_df['unit'].iloc[0]}）"
+                render_in_chart_grid(lambda unit_df=unit_df, unit_title=unit_title: render_line_chart(unit_df, unit_title))
+            rendered_ids.update(group_data["indicator_id"].unique())
+
+    handled = {indicator_id for _, ids in CHART_GROUPS for indicator_id in ids} | set(INTENTION_IDS) | set(HEALTH_DUAL_AXIS_IDS) | set(DYNAMICS_IDS)
+    latest_candidates: list[pd.DataFrame] = []
+    remaining_ids = [indicator_id for indicator_id in selected_ids if indicator_id not in handled and indicator_id not in rendered_ids]
+    remaining_df = chart_df[
+        chart_df["indicator_id"].isin(remaining_ids)
         & chart_df["value"].notna()
         & chart_df["period_dt"].notna()
     ].copy()
-    if dynamics["period_dt"].nunique() >= 2 and dynamics["indicator_id"].nunique() >= 1:
-        render_line_chart(dynamics, "人口移動・自然動態")
-        rendered_ids.update(dynamics["indicator_id"].unique())
+    for (category, unit), grouped_data in remaining_df.groupby(["category", "unit"], dropna=False):
+        if grouped_data["period_dt"].nunique() >= 2 and grouped_data["indicator_id"].nunique() >= 2:
+            render_in_chart_grid(
+                lambda grouped_data=grouped_data, category=category, unit=unit: render_line_chart(
+                    grouped_data, f"{category}（{unit}）"
+                )
+            )
+            rendered_ids.update(grouped_data["indicator_id"].unique())
 
-    render_intention_chart(chart_df, selected_ids)
-    rendered_ids.update([indicator_id for indicator_id in INTENTION_IDS if indicator_id in selected_ids])
-
-    handled = set(DYNAMICS_IDS) | set(INTENTION_IDS)
-    latest_candidates: list[pd.DataFrame] = []
     for indicator_id in selected_ids:
-        if indicator_id in handled:
+        if indicator_id in handled or indicator_id in rendered_ids:
             continue
         data = chart_df[
             (chart_df["indicator_id"] == indicator_id)
@@ -975,10 +2114,10 @@ def render_chart_tab(area_df: pd.DataFrame, selected_ids: list[str]) -> None:
             & chart_df["period_dt"].notna()
         ].copy()
         if data["period_dt"].nunique() >= 2:
-            render_line_chart(data, data["indicator_name"].iloc[0])
+            render_in_chart_grid(lambda data=data: render_line_chart(data, data["indicator_name"].iloc[0]))
             rendered_ids.add(indicator_id)
         else:
-            latest = latest_records(area_df[area_df["indicator_id"] == indicator_id])
+            latest = latest_records(chart_df[chart_df["indicator_id"] == indicator_id])
             if not latest.empty:
                 latest_candidates.append(latest)
 
@@ -986,52 +2125,58 @@ def render_chart_tab(area_df: pd.DataFrame, selected_ids: list[str]) -> None:
         latest_bars = pd.concat(latest_candidates, ignore_index=True)
         latest_bars = latest_bars[~latest_bars["indicator_id"].isin(rendered_ids)].copy()
         if not latest_bars.empty:
-            st.markdown("#### 最新値で確認する指標")
             for (category, unit), unit_df in latest_bars.groupby(["category", "unit"], dropna=False):
                 title = f"{category}（{unit}）"
-                render_latest_bar_chart(unit_df.sort_values("indicator_name"), title)
+                render_in_chart_grid(lambda unit_df=unit_df, title=title: render_latest_bar_chart(unit_df.sort_values("indicator_name"), title))
 
-    latest_only = area_df[area_df["indicator_id"].isin(selected_ids)].copy()
-    latest = latest_records(latest_only)
-    if not latest.empty:
-        st.markdown("#### 最新値一覧")
-        render_latest_table(latest_only)
+    render_context_section(area_df, selected_ids, date_range)
 
 
 def summarize_area(area_df: pd.DataFrame, selected_ids: list[str]) -> None:
-    icon_heading("summary", "要約")
-    latest = latest_records(area_df[area_df["indicator_id"].isin(selected_ids)])
+    selected_df = area_df[area_df["indicator_id"].isin(selected_ids)].copy()
+    latest = latest_records(selected_df)
     if latest.empty:
         st.info("要約できるデータがありません。")
         return
 
     area_name = area_df["area_name"].iloc[0]
-    st.markdown(f"### {area_name}の概況")
+    context_events = local_context_for_area(area_name)
 
-    by_id = latest.set_index("indicator_id")
-    lines: list[str] = []
-    for indicator_id in ["current_population", "households", "evacuees", "resident_rate"]:
-        if indicator_id in by_id.index:
-            row = by_id.loc[indicator_id]
-            lines.append(f"{row['indicator_name']}は{row['period_label']}時点で{row['value']:,.1f}{row['unit']}です。")
-    if lines:
-        st.write(" ".join(lines))
+    icon_heading("summary", "総合評価")
+    st.write(overall_evaluation_paragraph(area_df, selected_ids, context_events))
+    st.caption("この総合評価は、復興の達成率や最終ゴールへの進捗率ではなく、現在読み込まれている公開データから確認できる変化とデータ充足状況を要約した暫定コメントです。")
 
-    movement_ids = [x for x in ["transfer_in", "transfer_out", "births", "deaths"] if x in by_id.index]
-    if movement_ids:
-        text = []
-        for indicator_id in movement_ids:
-            row = by_id.loc[indicator_id]
-            text.append(f"{row['indicator_name']} {row['value']:,.0f}{row['unit']}（{row['period_label']}）")
-        st.write("人口動態の最新値は、" + "、".join(text) + "です。")
+    for group_name, group_ids in INDICATOR_GROUPS.items():
+        active_ids = [indicator_id for indicator_id in group_ids if indicator_id in selected_ids]
+        if not active_ids:
+            continue
 
-    health_ids = [x for x in ["suicide_deaths_vital", "suicide_rate_vital"] if x in by_id.index]
-    if health_ids:
-        text = []
-        for indicator_id in health_ids:
-            row = by_id.loc[indicator_id]
-            text.append(f"{row['indicator_name']} {row['value']:,.1f}{row['unit']}（{row['period_label']}）")
-        st.write("身体的・精神的健康に関する確認可能な指標として、" + "、".join(text) + "が表示されています。自殺死亡率は人口規模が小さい年ではNO DATAとして扱っています。")
+        group_latest = latest[latest["indicator_id"].isin(active_ids)].copy()
+        records = trend_records(area_df, active_ids)
+        if group_latest.empty and not records:
+            continue
+
+        icon_heading(SUMMARY_GROUP_ICONS.get(group_name, "summary"), group_name)
+        st.write(natural_summary_paragraph(group_latest, records))
+
+        if group_name == "身体的・精神的健康":
+            st.caption("自殺死亡率は人口規模が小さい年ではNO DATAとして扱っています。年次の変動が大きく見える場合があるため、単年度だけで解釈しないでください。")
+        elif group_name == "行政・地域の取り組み":
+            if context_events.empty:
+                st.write("この市町村について確認済みの行政・地域の取り組みデータはまだありません。DATAなしとして扱います。")
+            else:
+                st.write(
+                    "この項目は、確認できた報告書、施策・事業、調査・検証、地域活動などの情報を時点付きで整理したものです。"
+                    "件数は取り組みの存在を把握するための暫定指標であり、取り組みの質や効果を直接評価するものではありません。"
+                )
+        elif records:
+            event = event_near_change(context_events, records[0]["change_dt"])
+            if event is not None:
+                st.write(
+                    f"特徴的な変化が見られた{records[0]['change_label']}の前後には、"
+                    f"{event['event_label']}の「{event['title']}」が確認されています。"
+                    "これは指標変化の背景として参照する情報であり、因果関係を示すものではありません。"
+                )
 
     st.caption("この要約は現在読み込まれているデータから機械的に作成した暫定コメントです。解釈や因果関係は、出典・調査設計を確認したうえで別途検討してください。")
 
@@ -1072,17 +2217,26 @@ def main() -> None:
         st.session_state[AREA_SELECTION_KEY] = area_options[0]
 
     sync_query_area(area_options)
+    theme_label = st.sidebar.radio(
+        "表示テーマ",
+        options=["ライト", "ダーク"],
+        index=0 if current_theme() == "light" else 1,
+        horizontal=True,
+    )
+    st.session_state["dashboard_theme"] = "dark" if theme_label == "ダーク" else "light"
+    apply_dashboard_theme(st.session_state["dashboard_theme"])
+
     selected_area = st.sidebar.selectbox(
         "市町村（補助選択）",
         options=area_options,
         key=AREA_SELECTION_KEY,
     )
+    area_df = df[df["area_name"] == selected_area].copy()
+    date_range = date_range_slider(df)
     selected_ids = render_indicator_selector(df)
     if not selected_ids:
         st.warning("表示する指標を1つ以上選択してください。")
         return
-
-    area_df = df[df["area_name"] == selected_area].copy()
 
     st.markdown('<div class="dashboard-title">福島県復興指標ダッシュボード</div>', unsafe_allow_html=True)
     st.markdown(
@@ -1093,18 +2247,23 @@ def main() -> None:
         f'<div class="data-updated">データ更新日: {data_updated_label(df)}</div>',
         unsafe_allow_html=True,
     )
-    area_df = df[df["area_name"] == selected_area].copy()
     render_area_map(area_options, selected_area)
 
-    graph_tab, summary_tab, data_tab, source_tab = st.tabs(["復興指標グラフ", "要約", "データ", "出典・取得状況"])
+    graph_tab, summary_tab, data_tab, source_tab = st.tabs(["復興指標", "要約", "データ", "出典・取得状況"])
     with graph_tab:
-        render_chart_tab(area_df, selected_ids)
+        render_chart_tab(area_df, selected_ids, date_range)
     with summary_tab:
         summarize_area(area_df, selected_ids)
     with data_tab:
         icon_heading("table", "データ")
         data = area_df[area_df["indicator_id"].isin(selected_ids)].copy()
-        data = data.sort_values(["indicator_name", "period_dt", "period"])
+        latest = latest_records(data)
+        if not latest.empty:
+            st.markdown("#### 最新値一覧")
+            render_latest_table(data)
+        st.markdown("#### グラフに使用しているデータ")
+        data = sort_by_graph_order(data)
+        data = filter_data_table(data)
         st.dataframe(
             data[
                 [
