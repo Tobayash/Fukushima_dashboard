@@ -2159,9 +2159,9 @@ def summarize_area(area_df: pd.DataFrame, selected_ids: list[str]) -> None:
     area_name = area_df["area_name"].iloc[0]
     context_events = local_context_for_area(area_name)
 
-    icon_heading("summary", "総合評価")
+    icon_heading("summary", "サマリー")
     st.write(overall_evaluation_paragraph(area_df, selected_ids, context_events))
-    st.caption("この総合評価は、復興の達成率や最終ゴールへの進捗率ではなく、現在読み込まれている公開データから確認できる変化とデータ充足状況を要約した暫定コメントです。")
+    st.caption("このサマリーは、復興の達成率や最終ゴールへの進捗率ではなく、現在読み込まれている公開データから確認できる変化とデータ充足状況を要約した暫定コメントです。")
 
     for group_name, group_ids in INDICATOR_GROUPS.items():
         active_ids = [indicator_id for indicator_id in group_ids if indicator_id in selected_ids]
