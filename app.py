@@ -314,11 +314,21 @@ st.markdown(
         gap: .35rem;
     }
     [data-testid="stPlotlyChart"] {
+        background: transparent;
+        border: 0;
+        padding: 0;
+        margin: .35rem 0 1.05rem;
+        overflow: visible !important;
+    }
+    [data-testid="stPlotlyChart"] > div {
         background: var(--panel-bg);
         border: 1px solid var(--border);
         border-radius: 8px;
         padding: .35rem;
-        margin: .35rem 0 .85rem;
+        overflow: visible !important;
+    }
+    [data-testid="stPlotlyChart"] iframe {
+        overflow: hidden !important;
     }
     [data-testid="stMarkdownContainer"] {
         color: var(--text-main);
@@ -417,17 +427,20 @@ def chart_theme_layout() -> dict:
 
 def render_plotly_chart(fig: go.Figure) -> None:
     fig.update_layout(**chart_theme_layout())
+    current_height = fig.layout.height
+    if current_height is None or current_height < 500:
+        fig.update_layout(height=500)
     fig.update_layout(
         legend=dict(
             orientation="h",
             yanchor="top",
-            y=-0.24,
+            y=-0.18,
             xanchor="center",
             x=0.5,
         ),
         legend_title_text="",
     )
-    st.plotly_chart(fig, width="stretch")
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False, "responsive": True})
 
 
 @st.cache_data(show_spinner=False)
@@ -1998,14 +2011,17 @@ def render_chart_tab(area_df: pd.DataFrame, selected_ids: list[str], date_range:
         | ((area_df["period_dt"] >= start_date) & (area_df["period_dt"] <= end_date))
     ].copy()
 
-    chart_columns = st.columns(2, gap="large")
-    chart_index = 0
+    chart_items = []
 
     def render_in_chart_grid(render_fn) -> None:
-        nonlocal chart_index
-        with chart_columns[chart_index % 2]:
-            render_fn()
-        chart_index += 1
+        chart_items.append(render_fn)
+
+    def render_chart_grid() -> None:
+        for i in range(0, len(chart_items), 2):
+            row_columns = st.columns(2, gap="large")
+            for column, render_fn in zip(row_columns, chart_items[i : i + 2]):
+                with column:
+                    render_fn()
 
     rendered_ids: set[str] = set()
     population_household_ids = [indicator_id for indicator_id in POPULATION_HOUSEHOLD_IDS if indicator_id in selected_ids]
@@ -2129,6 +2145,7 @@ def render_chart_tab(area_df: pd.DataFrame, selected_ids: list[str], date_range:
                 title = f"{category}（{unit}）"
                 render_in_chart_grid(lambda unit_df=unit_df, title=title: render_latest_bar_chart(unit_df.sort_values("indicator_name"), title))
 
+    render_chart_grid()
     render_context_section(area_df, selected_ids, date_range)
 
 
